@@ -129,10 +129,14 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>C:\Users\Win10\Downloads\boost_1_88_0\boost_1_88_0;C:\Users\Win10\Downloads\cryptopp890</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>C:\Users\Win10\Downloads\boost_1_88_0\boost_1_88_0\stage\lib\libboost_system-vc143-mt-gd-x64-1_88.lib;cryptlib.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Users\Win10\Downloads\boost_1_88_0\boost_1_88_0\stage\lib;C:\Users\Win10\Downloads\cryptopp890\x64\Output\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -176,9 +180,20 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="client.cpp" />
+    <ClCompile Include="AESWrapper.cpp" />
+    <ClCompile Include="Base64Wrapper.cpp" />
+    <ClCompile Include="Client.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="ClientEntry.cpp" />
+    <ClCompile Include="RSAWrapper.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="AESWrapper.h" />
+    <ClInclude Include="Base64Wrapper.h" />
+    <ClInclude Include="Client.h" />
+    <ClInclude Include="ClientEntry.h" />
+    <ClInclude Include="RSAWrapper.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <ImportGroup Label="ExtensionTargets">
-  </ImportGroup>
+  <ImportGroup Label="ExtensionTargets" />
 </Project>

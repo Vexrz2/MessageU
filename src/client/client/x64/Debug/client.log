@@ -1,2 +1,6 @@
-﻿  client.cpp
+﻿  Client.cpp
+  Please define _WIN32_WINNT or _WIN32_WINDOWS appropriately. For example:
+  - add -D_WIN32_WINNT=0x0601 to the compiler command line; or
+  - add _WIN32_WINNT=0x0601 to your project's Preprocessor Definitions.
+  Assuming _WIN32_WINNT=0x0601 (i.e. Windows 7 target).
   client.vcxproj -> C:\Users\Win10\Documents\Ofek\UniversityWork\Defensive\mmn15\MessageU\src\client\x64\Debug\client.exe
