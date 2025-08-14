@@ -13,10 +13,8 @@ void Client::run()
 {
 	std::cout << "Client version: " << _version << std::endl;
 	
-	// Test boost connection
+	// Temp test connections
 	testBoostConnection();
-	
-	// Test crypto++ functionality
 	testCryptoPPConnection();
 	
 	while (true)
@@ -25,7 +23,7 @@ void Client::run()
 		int choice;
 		std::cin >> choice;
 
-		handle_client_input(choice);
+		handleClientInput(choice);
 	}
 }
 
@@ -43,43 +41,74 @@ void Client::promptForInput()
 	std::cout << "? ";
 }
 
-void Client::handle_client_input(int choice)
+void Client::handleClientInput(int choice)
 {
 	switch (choice)
 	{
 	case 110:
-		std::cout << "Registering client..." << std::endl;
-		// Registration logic here
+		handleRegister();
 		break;
 	case 120:
-		std::cout << "Requesting clients list..." << std::endl;
-		// Request clients list logic here
+		handleGetClients();
 		break;
 	case 130:
-		std::cout << "Requesting public key..." << std::endl;
-		// Request public key logic here
+		handleGetPublicKey();
 		break;
 	case 140:
-		std::cout << "Requesting waiting messages..." << std::endl;
-		// Request waiting messages logic here
+		handleGetMessages();
 		break;
 	case 150:
-		std::cout << "Sending a text message..." << std::endl;
-		// Send text message logic here
+		handleSendMessage();
 		break;
 	case 151:
-		std::cout << "Sending request for symmetric key..." << std::endl;
-		// Send request for symmetric key logic here
+		handleGetSymmetricKey();
 		break;
 	case 152:
-		std::cout << "Sending your symmetric key..." << std::endl;
-		// Send symmetric key logic here
+		handleSendSymmetricKey();
 		break;
 	case 0:
 	default:
 		std::cout << "Exiting client." << std::endl;
 		exit(0);
 	}
+}
+
+Client::RequestHeader Client::buildRequestHeader(uint16_t code, uint32_t payloadSize)
+{
+    // Request header structure:
+    // Client ID: 16 bytes (128 bit unique identifier)
+    // Version: 1 byte
+    // Code: 2 bytes (request code)
+    // Payload size: 4 bytes (content size)
+    
+    RequestHeader header;
+    
+    // Initialize client ID (pad with zeros if shorter than 16 bytes)
+    memset(header.clientId, 0, 16);
+    if (!_clientId.empty()) {
+        size_t copySize = std::min(_clientId.length(), static_cast<size_t>(16));
+        memcpy(header.clientId, _clientId.c_str(), copySize);
+    }
+    
+    // Set version
+    header.version = static_cast<uint8_t>(_version);
+    
+    // Code and payload size will be set by specific request handlers
+    header.code = 0;
+    header.payloadSize = 0;
+    
+	return header;
+}
+
+void Client::handleRegister()
+{
+	std::string username;
+
+	// Receive username from user input
+	std::cout << "Please enter desired username: ";
+	std::cin >> username;
+
+
 }
 
 void Client::testBoostConnection()
