@@ -399,7 +399,10 @@ class Server:
         """
         header = self.build_response_header(RESPONSE_CODES["ERROR"], 0)
         socket.send(header)
-
-if __name__ == "__main__":
+        
+def main():
     server = Server()
     server.run()
+
+if __name__ == "__main__":
+    main()

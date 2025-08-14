@@ -1,6 +1,11 @@
 #include "Client.h"	
 #include <iostream>
 #include <boost/asio.hpp>
+#include <aes.h>
+#include <modes.h>
+#include <filters.h>
+#include <hex.h>
+#include <osrng.h>
 
 using boost::asio::ip::tcp;
 
@@ -10,6 +15,9 @@ void Client::run()
 	
 	// Test boost connection
 	testBoostConnection();
+	
+	// Test crypto++ functionality
+	testCryptoPPConnection();
 	
 	while (true)
 	{
@@ -93,5 +101,57 @@ void Client::testBoostConnection()
 	catch (std::exception& e)
 	{
 		std::cout << "Connection test failed: " << e.what() << std::endl;
+	}
+}
+
+void Client::testCryptoPPConnection()
+{
+	try
+	{
+		std::cout << "Testing Crypto++ functionality..." << std::endl;
+		
+		// Generate a random key and IV
+		CryptoPP::AutoSeededRandomPool rng;
+		CryptoPP::SecByteBlock key(CryptoPP::AES::DEFAULT_KEYLENGTH);
+		CryptoPP::SecByteBlock iv(CryptoPP::AES::BLOCKSIZE);
+		rng.GenerateBlock(key, key.size());
+		rng.GenerateBlock(iv, iv.size());
+		
+		// Test data
+		std::string plaintext = "Hello Crypto++!";
+		std::string ciphertext, recovered;
+		
+		// Encryption
+		CryptoPP::CBC_Mode<CryptoPP::AES>::Encryption encryption;
+		encryption.SetKeyWithIV(key, key.size(), iv);
+		
+		CryptoPP::StringSource(plaintext, true,
+			new CryptoPP::StreamTransformationFilter(encryption,
+				new CryptoPP::StringSink(ciphertext)
+			)
+		);
+		
+		// Decryption
+		CryptoPP::CBC_Mode<CryptoPP::AES>::Decryption decryption;
+		decryption.SetKeyWithIV(key, key.size(), iv);
+		
+		CryptoPP::StringSource(ciphertext, true,
+			new CryptoPP::StreamTransformationFilter(decryption,
+				new CryptoPP::StringSink(recovered)
+			)
+		);
+		
+		if (plaintext == recovered)
+		{
+			std::cout << "Successfully tested Crypto++ AES encryption/decryption" << std::endl;
+		}
+		else
+		{
+			std::cout << "Crypto++ test failed: decryption mismatch" << std::endl;
+		}
+	}
+	catch (std::exception& e)
+	{
+		std::cout << "Crypto++ test failed: " << e.what() << std::endl;
 	}
 }

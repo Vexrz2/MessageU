@@ -19,5 +19,6 @@ public:
 	void promptForInput();
 	void handle_client_input(int choice);
 	void testBoostConnection();
+	void testCryptoPPConnection();
 };
 
