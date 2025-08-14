@@ -62,6 +62,7 @@ public:
 	Client();
     void run();
 	void promptForInput();
+    void readClientInfo();
     void readServerInfo();
 	void connectToServer();
     bool ensureConnection();

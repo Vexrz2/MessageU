@@ -14,9 +14,8 @@ Client::Client()
 	: _rsaPrivateWrapper(), _aesWrapper(), _base64Wrapper(), _ioContext(std::make_unique<boost::asio::io_context>()), 
       _socket(std::make_unique<tcp::socket>(*_ioContext))
 {
-	// TODO: Read from my.info
-	_clientId = "default_client_id";
-	_clientName = "default_client_name";
+	// Read Client info from my.info
+    readClientInfo();
 
 	// Read server address and port from server.info
 	readServerInfo();
@@ -37,8 +36,6 @@ void Client::run()
         return;
 	}
 
-	std::cout << "Successfully connected to server at " << _serverAddress << ":" << _serverPort << std::endl;
-	
 	while (true)
 	{
 		promptForInput();
@@ -49,10 +46,26 @@ void Client::run()
 	}
 }
 
+void Client::readClientInfo()
+{
+	// Read client ID and name from my.info
+	std::ifstream clientFile("my.info");
+
+    if (!clientFile.is_open())
+    {
+        std::cerr << "Error: Could not open my.info file" << std::endl;
+        _clientId = "default_client_id";
+        _clientName = "default_client_name";
+        return;
+	}
+
+
+}
+
 void Client::readServerInfo()
 {
 	// Read server address and port from server.info
-	std::ifstream serverFile("\\x64\\Release\\server.info");
+	std::ifstream serverFile("server.info");
 	if (!serverFile.is_open())
 	{
 		// Default fallback
