@@ -12,6 +12,7 @@
 [Oo]bj/
 [Ll]og/
 *.log
+*.tlog
 
 # Compiled binary files
 *.exe
