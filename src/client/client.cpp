@@ -1,5 +1,6 @@
 #include "Client.h"	
 #include <iostream>
+#include <fstream>
 #include <boost/asio.hpp>
 #include <aes.h>
 #include <modes.h>
@@ -9,13 +10,34 @@
 
 using boost::asio::ip::tcp;
 
+Client::Client()
+	: _rsaPrivateWrapper(), _aesWrapper(), _base64Wrapper(), _ioContext(std::make_unique<boost::asio::io_context>()), 
+      _socket(std::make_unique<tcp::socket>(*_ioContext))
+{
+	// TODO: Read from my.info
+	_clientId = "default_client_id";
+	_clientName = "default_client_name";
+
+	// Read server address and port from server.info
+	readServerInfo();
+
+}
+
 void Client::run()
 {
 	std::cout << "Client version: " << _version << std::endl;
-	
-	// Temp test connections
-	testBoostConnection();
-	testCryptoPPConnection();
+
+	try 
+    {
+        connectToServer();
+    } 
+    catch (const std::exception& e) 
+    {
+        std::cerr << "Error connecting to server." << std::endl;
+        return;
+	}
+
+	std::cout << "Successfully connected to server at " << _serverAddress << ":" << _serverPort << std::endl;
 	
 	while (true)
 	{
@@ -25,6 +47,85 @@ void Client::run()
 
 		handleClientInput(choice);
 	}
+}
+
+void Client::readServerInfo()
+{
+	// Read server address and port from server.info
+	std::ifstream serverFile("\\x64\\Release\\server.info");
+	if (!serverFile.is_open())
+	{
+		// Default fallback
+		std::cerr << "Error: Could not open server.info file" << std::endl;
+		_serverAddress = "127.0.0.1";
+		_serverPort = 1357;            
+		return;
+	}
+
+	std::string line;
+	if (std::getline(serverFile, line))
+	{
+		size_t colonPos = line.find(':');
+		if (colonPos != std::string::npos)
+		{
+			_serverAddress = line.substr(0, colonPos);
+			try
+			{
+				_serverPort = std::stoi(line.substr(colonPos + 1));
+			}
+			catch (const std::exception& e)
+			{
+				std::cerr << "Error parsing port number, using default 1357" << std::endl;
+				_serverPort = 1357;
+			}
+		}
+		else
+		{
+			std::cerr << "Invalid format in server.info, expected address:port" << std::endl;
+			_serverAddress = "127.0.0.1";
+			_serverPort = 1357;
+		}
+	}
+	else
+	{
+		std::cerr << "Error reading server.info file" << std::endl;
+		_serverAddress = "127.0.0.1";
+		_serverPort = 1357;
+	}
+
+	serverFile.close();}
+
+void Client::connectToServer()
+{
+	if (_isConnected && _socket->is_open())
+	{
+		std::cout << "Already connected to server" << std::endl;
+		return;
+	}
+
+	tcp::resolver resolver(*_ioContext);
+	tcp::resolver::results_type endpoints = resolver.resolve(_serverAddress, std::to_string(_serverPort));
+
+	// Close existing socket if open
+	if (_socket->is_open())
+	{
+		_socket->close();
+	}
+
+	boost::asio::connect(*_socket, endpoints);
+	_isConnected = true;
+
+	std::cout << "Connected to server at " << _serverAddress << ":" << _serverPort << std::endl;
+}
+
+bool Client::ensureConnection()
+{
+	if (!_isConnected || !_socket->is_open())
+	{
+		std::cout << "Attempting to reconnect to server..." << std::endl;
+		connectToServer();
+    }
+    return _isConnected;
 }
 
 void Client::promptForInput()
@@ -103,7 +204,7 @@ Client::RequestHeader Client::buildRequestHeader(uint16_t code, uint32_t payload
 void Client::handleRegister()
 {
 	std::string username;
-
+	  
 	// Receive username from user input
 	std::cout << "Please enter desired username: ";
 	std::cin >> username;
@@ -111,76 +212,202 @@ void Client::handleRegister()
 
 }
 
-void Client::testBoostConnection()
+void Client::handleGetClients()
 {
-	try 
-	{
-		boost::asio::io_context io_context;
-		tcp::socket socket(io_context);
-		tcp::resolver resolver(io_context);
-		
-		std::cout << "Testing boost connection to localhost:8888..." << std::endl;
-		
-		auto endpoints = resolver.resolve("127.0.0.1", "8888");
-		boost::asio::connect(socket, endpoints);
-		
-		std::cout << "Successfully connected to localhost:8888" << std::endl;
-		socket.close();
-	}
-	catch (std::exception& e)
-	{
-		std::cout << "Connection test failed: " << e.what() << std::endl;
-	}
+    if (!ensureConnection())
+    {
+        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
+        return;
+    }
+
+    RequestHeader header = buildRequestHeader(_requestCodes["GET_CLIENTS"], 0);
+    header.code = _requestCodes["GET_CLIENTS"];
+    header.payloadSize = 0;
+
+    try
+    {
+        // Send request header
+        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
+        
+        // Read response
+        char response[1024];
+        size_t len = _socket->read_some(boost::asio::buffer(response));
+        
+        std::cout << "Received response: " << std::string(response, len) << std::endl;
+    }
+    catch (std::exception& e)
+    {
+        _isConnected = false;
+        std::cerr << "Error getting clients: " << e.what() << std::endl;
+    }
 }
 
-void Client::testCryptoPPConnection()
+void Client::handleGetPublicKey()
 {
-	try
-	{
-		std::cout << "Testing Crypto++ functionality..." << std::endl;
-		
-		// Generate a random key and IV
-		CryptoPP::AutoSeededRandomPool rng;
-		CryptoPP::SecByteBlock key(CryptoPP::AES::DEFAULT_KEYLENGTH);
-		CryptoPP::SecByteBlock iv(CryptoPP::AES::BLOCKSIZE);
-		rng.GenerateBlock(key, key.size());
-		rng.GenerateBlock(iv, iv.size());
-		
-		// Test data
-		std::string plaintext = "Hello Crypto++!";
-		std::string ciphertext, recovered;
-		
-		// Encryption
-		CryptoPP::CBC_Mode<CryptoPP::AES>::Encryption encryption;
-		encryption.SetKeyWithIV(key, key.size(), iv);
-		
-		CryptoPP::StringSource(plaintext, true,
-			new CryptoPP::StreamTransformationFilter(encryption,
-				new CryptoPP::StringSink(ciphertext)
-			)
-		);
-		
-		// Decryption
-		CryptoPP::CBC_Mode<CryptoPP::AES>::Decryption decryption;
-		decryption.SetKeyWithIV(key, key.size(), iv);
-		
-		CryptoPP::StringSource(ciphertext, true,
-			new CryptoPP::StreamTransformationFilter(decryption,
-				new CryptoPP::StringSink(recovered)
-			)
-		);
-		
-		if (plaintext == recovered)
-		{
-			std::cout << "Successfully tested Crypto++ AES encryption/decryption" << std::endl;
-		}
-		else
-		{
-			std::cout << "Crypto++ test failed: decryption mismatch" << std::endl;
-		}
-	}
-	catch (std::exception& e)
-	{
-		std::cout << "Crypto++ test failed: " << e.what() << std::endl;
-	}
+    if (!ensureConnection())
+    {
+        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
+        return;
+    }
+
+    RequestHeader header = buildRequestHeader(_requestCodes["GET_PUBLIC_KEY"], 0);
+    header.code = _requestCodes["GET_PUBLIC_KEY"];
+    header.payloadSize = 0;
+    
+    try
+    {
+        // Send request header
+        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
+        
+        // Read response
+        char response[1024];
+        size_t len = _socket->read_some(boost::asio::buffer(response));
+        
+        std::cout << "Received public key: " << std::string(response, len) << std::endl;
+    }
+    catch (std::exception& e)
+    {
+        _isConnected = false;
+        std::cerr << "Error getting public key: " << e.what() << std::endl;
+    }
+}
+
+void Client::handleGetMessages()
+{
+    if (!ensureConnection())
+    {
+        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
+        return;
+    }
+
+    RequestHeader header = buildRequestHeader(_requestCodes["GET_MESSAGES"], 0);
+    header.code = _requestCodes["GET_MESSAGES"];
+    header.payloadSize = 0;
+    
+    try
+    {
+        // Send request header
+        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
+        
+        // Read response
+        char response[1024];
+        size_t len = _socket->read_some(boost::asio::buffer(response));
+        
+        std::cout << "Received messages: " << std::string(response, len) << std::endl;
+    }
+    catch (std::exception& e)
+    {
+        _isConnected = false;
+        std::cerr << "Error getting messages: " << e.what() << std::endl;
+    }
+}
+
+void Client::handleSendMessage()
+{
+    if (!ensureConnection())
+    {
+        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
+        return;
+    }
+
+    // Get recipient and message from user input
+    std::string recipient, message;
+    std::cout << "Enter recipient username: ";
+    std::cin >> recipient;
+    std::cout << "Enter your message: ";
+    std::cin.ignore(); // Clear newline character from previous input
+    std::getline(std::cin, message);
+    
+    // Encrypt the message using AES
+    AESWrapper aesWrapper;
+    std::string encryptedMessage = aesWrapper.encrypt(message.c_str(), message.length());
+    
+    // Build request header
+    RequestHeader header = buildRequestHeader(_requestCodes["SEND_MESSAGE"], encryptedMessage.size());
+    header.code = _requestCodes["SEND_MESSAGE"];
+    header.payloadSize = encryptedMessage.size();
+    
+    try
+    {
+        // Send request header
+        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
+        
+        // Send encrypted message
+        boost::asio::write(*_socket, boost::asio::buffer(encryptedMessage));
+        
+        std::cout << "Message sent successfully." << std::endl;
+    }
+    catch (std::exception& e)
+    {
+        _isConnected = false;
+        std::cerr << "Error sending message: " << e.what() << std::endl;
+    }
+}
+
+void Client::handleGetSymmetricKey()
+{
+    if (!ensureConnection())
+    {
+        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
+        return;
+    }
+
+    RequestHeader header = buildRequestHeader(_requestCodes["GET_SYMMETRIC_KEY"], 0);
+    header.code = _requestCodes["GET_SYMMETRIC_KEY"];
+    header.payloadSize = 0;
+    
+    try
+    {
+        // Send request header
+        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
+        
+        // Read response
+        char response[1024];
+        size_t len = _socket->read_some(boost::asio::buffer(response));
+        
+        std::cout << "Received symmetric key: " << std::string(response, len) << std::endl;
+    }
+    catch (std::exception& e)
+    {
+        _isConnected = false;
+        std::cerr << "Error getting symmetric key: " << e.what() << std::endl;
+    }
+}
+
+void Client::handleSendSymmetricKey()
+{
+    if (!ensureConnection())
+    {
+        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
+        return;
+    }
+
+    const unsigned char* key = _aesWrapper.getKey();
+
+    if (key == nullptr)
+    {
+        std::cerr << "Error: Symmetric key is not set." << std::endl;
+        return;
+    }
+
+    // Build request header
+    RequestHeader header = buildRequestHeader(_requestCodes["SEND_SYMMETRIC_KEY"], AESWrapper::DEFAULT_KEYLENGTH);
+    header.code = _requestCodes["SEND_SYMMETRIC_KEY"];
+    header.payloadSize = AESWrapper::DEFAULT_KEYLENGTH;
+
+    try
+    {
+        // Send request header
+        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
+        
+        // Send symmetric key
+        boost::asio::write(*_socket, boost::asio::buffer(key, AESWrapper::DEFAULT_KEYLENGTH));
+        
+        std::cout << "Symmetric key sent successfully." << std::endl;
+    }
+    catch (std::exception& e)
+    {
+        _isConnected = false;
+        std::cerr << "Error sending symmetric key: " << e.what() << std::endl;
+    }
 }

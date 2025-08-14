@@ -1,7 +1,11 @@
 #pragma once
 #include <vector>
-#include "ClientEntry.h"
 #include <map>
+#include <boost/asio.hpp>
+#include "ClientEntry.h"
+#include "RSAWrapper.h"
+#include "AESWrapper.h"
+#include "Base64Wrapper.h"
 
 class Client
 {
@@ -21,12 +25,20 @@ private:
 	// Client-specific information
     std::string _clientId;
     std::string _clientName;
-    std::string _publicKey;
-    std::string _symmetricKey;
 
 	// Server connection information
-	std::string serverAddress;
-	int serverPort;
+	std::string _serverAddress;
+	int _serverPort;
+
+    // Socket
+	bool _isConnected = false;
+	std::unique_ptr<boost::asio::io_context> _ioContext;
+	std::unique_ptr<boost::asio::ip::tcp::socket> _socket;
+
+	// Encryption wrappers
+	RSAPrivateWrapper _rsaPrivateWrapper;
+	AESWrapper _aesWrapper;
+	Base64Wrapper _base64Wrapper;
 
     // Request/response codes
     std::map<std::string, int> _requestCodes = {
@@ -47,8 +59,13 @@ private:
 
 
 public:
+	Client();
     void run();
 	void promptForInput();
+    void readServerInfo();
+	void connectToServer();
+    bool ensureConnection();
+
 	void handleClientInput(int choice);
 
     Client::RequestHeader buildRequestHeader(uint16_t code, uint32_t payloadSize);
