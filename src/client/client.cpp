@@ -245,13 +245,13 @@ void Client::handleClientInput(int choice)
 		handleGetMessages();
 		break;
 	case 150:
-		handleSendMessage();
+		handleSendMessage(static_cast<int>(Client::MessageType::REGULAR));
 		break;
 	case 151:
-		handleGetSymmetricKey();
+		handleSendMessage(static_cast<int>(Client::MessageType::REQ_SYM_KEY));
 		break;
 	case 152:
-		handleSendSymmetricKey();
+		handleSendMessage(static_cast<int>(Client::MessageType::SEND_SYM_KEY));
 		break;
 	case 0:
 		std::cout << "Exiting client." << std::endl;
@@ -521,20 +521,29 @@ void Client::handleGetPublicKey()
             uint32_t payloadSize = responseHeader.payloadSize;
             std::vector<char> payloadBuffer(payloadSize);
             boost::asio::read(*_socket, boost::asio::buffer(payloadBuffer.data(), payloadSize));
-            // Deserialize public key
-            std::string publicKey(payloadBuffer.begin(), payloadBuffer.end());
+
+			// Parse client ID (16) and public key (160)
+            if (payloadSize < CLIENT_ID_LENGTH + RSAPublicWrapper::KEYSIZE)
+            {
+                std::cerr << "Error: Invalid payload size for public key response" << std::endl;
+                return;
+			}
+
+            std::array<uint8_t, CLIENT_ID_LENGTH> receivedClientId;
+			std::copy(payloadBuffer.begin(), payloadBuffer.begin() + CLIENT_ID_LENGTH, receivedClientId.begin());
+			std::string publicKey(payloadBuffer.begin() + CLIENT_ID_LENGTH, payloadBuffer.begin() + CLIENT_ID_LENGTH + RSAPublicWrapper::KEYSIZE);
 
 			// Store public key in the corresponding client entry
             for (auto& client : _clients)
             {
-                if (client.getUUID() == (header.clientId)) // Compare with client ID
+                if (client.getUUID() == receivedClientId) // Compare with client ID
                 {
                     client.setPublicKey(publicKey);
-                    break;
+					std::cout << "Successfully retrieved public key from client ID " << clientId << std::endl;
+                    return;
                 }
 			}
-
-			std::cout << "Successfully retrieved public key from client ID " << clientId << std::endl;
+			std::cout << "Failed to find client with ID " << clientId << std::endl;
         }
     }
     catch (std::exception& e)
@@ -586,10 +595,15 @@ void Client::handleGetMessages()
             // Read messages from response, one by one
 
             uint32_t payloadSize = responseHeader.payloadSize;
+            if (payloadSize == 0) 
+            {
+				std::cout << "No pending messages." << std::endl;
+                return;
+            }
+
             std::vector<char> payloadBuffer(payloadSize);
             boost::asio::read(*_socket, boost::asio::buffer(payloadBuffer.data(), payloadSize));
 
-            // Deserialize messages
             // Deserialize messages
             size_t offset = 0;
             while (offset < payloadSize)
@@ -704,6 +718,7 @@ void Client::handleGetMessages()
                     }
                     else
                     {
+						// Symmetric key not found
                         std::cout << "Can't decrypt message" << std::endl;
                     }
                 }
@@ -726,7 +741,7 @@ void Client::handleGetMessages()
     }
 }
 
-void Client::handleSendMessage()
+void Client::handleSendMessage(int type)
 {
     if (!ensureConnection())
     {
@@ -740,18 +755,113 @@ void Client::handleSendMessage()
 		return;
 	}
 
-    // Get recipient and message from user input
-    std::string recipient, message;
+    // Get recipient from user input
+    std::string recipient;
     std::cout << "Enter recipient username: ";
     std::cin >> recipient;
-    std::cout << "Enter your message: ";
-    std::cin.ignore(); // Clear newline character from previous input
-    std::getline(std::cin, message);
+
+	// Validate recipient name length
+    if (recipient.empty() || recipient.length() > MAX_CLIENT_NAME_LENGTH)
+    {
+        std::cerr << "Error: Recipient name must be between 1 and " << MAX_CLIENT_NAME_LENGTH << " characters long." << std::endl;
+        return;
+    }
     
-    // Encrypt the message using AES
-    AESWrapper aesWrapper;
-    std::string encryptedMessage = aesWrapper.encrypt(message.c_str(), message.length());
-    
+	// Find recipient client ID, public key, and symmetric key
+	std::array<uint8_t, CLIENT_ID_LENGTH> recipientId = { 0 };
+    std::string message, encryptedMessage;
+	std::string publicKey, symmetricKey;
+    for (const auto& client : _clients)
+    {
+        // Remove null padding from client name before comparison
+        std::string clientName = client.getName();
+        size_t nullPos = clientName.find('\0');
+        if (nullPos != std::string::npos) {
+            clientName = clientName.substr(0, nullPos);
+        }
+
+        if (clientName == recipient)
+        {
+            recipientId = client.getUUID();
+			publicKey = client.getPublicKey();
+            symmetricKey = client.getSymmetricKey();
+            break;
+        }
+	}
+
+    if (recipientId == std::array<uint8_t, CLIENT_ID_LENGTH>{0})
+    {
+        std::cerr << "Error: Recipient not found." << std::endl;
+        return;
+	}
+
+    if (publicKey.empty())
+    {
+        std::cerr << "Error: Public key for recipient not found." << std::endl;
+        return;
+    }
+
+    if (symmetricKey.empty() && type == static_cast<int>(MessageType::REGULAR)) // Only check for REGULAR messages
+    {
+        std::cerr << "Error: Symmetric key for recipient not found." << std::endl;
+		return;
+	}
+
+	// Prepare message content based on type
+	switch (type)
+	{
+	case static_cast<int>(MessageType::REGULAR):
+	{
+		// Get message content from user input
+		std::cout << "Enter message content: ";
+		std::cin.ignore(); // Clear the input buffer
+		std::getline(std::cin, message);
+		if (message.empty())
+		{
+			std::cerr << "Error: Message content cannot be empty." << std::endl;
+			return;
+		}
+
+		// Encrypt message using AES symmetric key
+		AESWrapper aesWrapper(reinterpret_cast<const unsigned char*>(symmetricKey.c_str()), symmetricKey.length());
+		encryptedMessage = aesWrapper.encrypt(message.c_str(), message.length());
+		if (encryptedMessage.empty())
+		{
+			std::cerr << "Error: Failed to encrypt message." << std::endl;
+			return;
+		}
+		break;
+	}
+	case static_cast<int>(MessageType::REQ_SYM_KEY):
+	{
+		// Empty message for symmetric key request, but still needs to be encrypted
+		message = ""; // No content for symmetric key request
+
+		// Encrypt message using recipient's public key
+		RSAPublicWrapper rsaPublicWrapper(publicKey);
+		encryptedMessage = rsaPublicWrapper.encrypt(message);
+		if (encryptedMessage.empty())
+		{
+			std::cerr << "Error: Failed to encrypt request for symmetric key." << std::endl;
+			return;
+		}
+		break;
+	}
+	case static_cast<int>(MessageType::SEND_SYM_KEY):
+	{
+		message = symmetricKey; // Use symmetric key as message content
+
+		// Encrypt message using recipient's public key
+		RSAPublicWrapper rsaPublicWrapper(publicKey);
+		encryptedMessage = rsaPublicWrapper.encrypt(message);
+		if (encryptedMessage.empty())
+		{
+			std::cerr << "Error: Failed to encrypt request for symmetric key." << std::endl;
+			return;
+		}
+	}
+	}
+
     // Build request header
     RequestHeader header = buildRequestHeader(_requestCodes["SEND_MESSAGE"], encryptedMessage.size());
     
@@ -762,80 +872,48 @@ void Client::handleSendMessage()
         
         // Send encrypted message
         boost::asio::write(*_socket, boost::asio::buffer(encryptedMessage));
-        
-        std::cout << "Message sent successfully." << std::endl;
+
+		// Read response
+		Client::ResponseHeader responseHeader;
+		size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
+
+        if (bytesRead != sizeof(responseHeader))
+        {
+            std::cerr << "Error reading response header from server" << std::endl;
+            return;
+		}
+
+		// Check response code
+        if (responseHeader.code == _responseCodes["ERROR"])
+        {
+            std::cerr << "Server error" << std::endl;
+            return;
+        }
+
+        if (responseHeader.code == _responseCodes["MESSAGE_SENT"])
+        {
+            uint32_t payloadSize = responseHeader.payloadSize;
+            std::vector<char> payloadBuffer(payloadSize);
+            boost::asio::read(*_socket, boost::asio::buffer(payloadBuffer.data(), payloadSize));
+
+			// Deserialize response payload
+            size_t offset = 0;
+            // Extract Client ID (16 bytes)
+            std::array<uint8_t, CLIENT_ID_LENGTH> senderClientId;
+            std::copy(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + CLIENT_ID_LENGTH, senderClientId.begin());
+            offset += CLIENT_ID_LENGTH;
+            // Extract Message ID (4 bytes)
+            uint32_t messageId;
+            std::memcpy(&messageId, payloadBuffer.data() + offset, sizeof(messageId));
+			offset += sizeof(messageId);
+
+            std::cout << "Message sent successfully. ID: " << messageId << std::endl;
+        }
     }
     catch (std::exception& e)
     {
         _isConnected = false;
         std::cerr << "Error sending message: " << e.what() << std::endl;
-    }
-}
-
-void Client::handleGetSymmetricKey()
-{
-    if (!ensureConnection())
-    {
-        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
-        return;
-    }  
-
-    if (!_isRegistered)
-    {
-        std::cerr << "You must register first before requesting symmetric key." << std::endl;
-        return;
-    }
-
-    RequestHeader header = buildRequestHeader(_requestCodes["GET_SYMMETRIC_KEY"], 0);
-    
-    try
-    {
-        // Send request header
-        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
-        
-        // Read response
-        char response[1024];
-        size_t len = _socket->read_some(boost::asio::buffer(response));
-        
-        std::cout << "Received symmetric key: " << std::string(response, len) << std::endl;
-    }
-    catch (std::exception& e)
-    {
-        _isConnected = false;
-        std::cerr << "Error getting symmetric key: " << e.what() << std::endl;
-    }
-}
-
-void Client::handleSendSymmetricKey()
-{
-    if (!ensureConnection())
-    {
-        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
-        return;
-    }
-
-    if (!_isRegistered)
-    {
-        std::cerr << "You must register first before sending symmetric key." << std::endl;
-        return;
-	}
-
-    // Build request header
-    RequestHeader header = buildRequestHeader(_requestCodes["SEND_SYMMETRIC_KEY"], AESWrapper::DEFAULT_KEYLENGTH);
-
-    try
-    {
-        // Send request header
-        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
-        
-        // 
-        
-        std::cout << "Symmetric key sent successfully." << std::endl;
-    }
-    catch (std::exception& e)
-    {
-        _isConnected = false;
-        std::cerr << "Error sending symmetric key: " << e.what() << std::endl;
     }
 }
 

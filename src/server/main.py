@@ -320,6 +320,8 @@ class Server:
         msg_type = payload_data[16]
         message_size = int.from_bytes(payload_data[17:21], byteorder='little')
         content = payload_data[21:]
+        
+        print(f"Sending message from {header[0]} to {to_client_id}")
 
         # Validate content size
         if len(content) != message_size:
@@ -371,7 +373,9 @@ class Server:
         - Content (variable size, encrypted)
         """
         client_id = header[0]
-        
+
+        print(f"Getting messages for client {client_id}")
+
         # Get pending messages for this client
         pending = self.pending_messages.get(client_id, [])
         

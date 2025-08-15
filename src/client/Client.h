@@ -67,6 +67,13 @@ private:
         {"ERROR", 9000}
     };
 
+	// Message types
+	enum class MessageType {
+		REQ_SYM_KEY = 1,
+		SEND_SYM_KEY = 2,
+		REGULAR = 3
+	};
+
 
 public:
 	Client();
@@ -88,9 +95,7 @@ public:
 	void handleGetClients();
 	void handleGetPublicKey();
 	void handleGetMessages();
-	void handleSendMessage();
-	void handleGetSymmetricKey();   
-	void handleSendSymmetricKey();
+	void handleSendMessage(int type);
 
 	// Helper functions
 	std::array<uint8_t, 16> hexStringToBytes(const std::string& hexString) const;
