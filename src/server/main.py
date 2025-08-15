@@ -75,7 +75,12 @@ class MessageEntry:
 
 class Server:
     def __init__(self):
-        self.clients = []
+        # Add a list of made up clients
+        self.clients = [
+            ClientEntry(id=uuid.uuid4().bytes, username="Alice", public_key=b'\x00' * 160, last_seen=datetime.now()),
+            ClientEntry(id=uuid.uuid4().bytes, username="Bob", public_key=b'\x00' * 160, last_seen=datetime.now()),
+            ClientEntry(id=uuid.uuid4().bytes, username="Charlie", public_key=b'\x00' * 160, last_seen=datetime.now())
+        ]
         self.messages = []
         self.pending_messages = {}
 
@@ -105,31 +110,38 @@ class Server:
             return DEFAULT_PORT
 
     def handle_client(self, socket: socket.socket):
-        try:
-            # Read header
-            header_data = socket.recv(HEADER_SIZE)
-            if not header_data or len(header_data) < HEADER_SIZE:
-                print("Incomplete header received, closing connection.")
-                return
+        while True:
+            try:
+                # Read header
+                header_data = socket.recv(HEADER_SIZE)
+                if not header_data:
+                    print("Client disconnected.")
+                    break
 
-            # Parse header
-            header = struct.unpack(HEADER_FORMAT, header_data)
-            payload_size = header[3]
+                if len(header_data) < HEADER_SIZE:
+                    print("Incomplete header received, closing connection.")
+                    break
 
-            # Read payload
-            payload_data = b""
-            if payload_size > 0:
-                payload_data = socket.recv(payload_size)
-                if len(payload_data) < payload_size:
-                    print("Incomplete payload received, closing connection.")
-                    return
+                # Parse header
+                header = struct.unpack(HEADER_FORMAT, header_data)
+                payload_size = header[3]
 
-            self.handle_client_message(socket, header, payload_data)
+                # Read payload
+                payload_data = b""
+                if payload_size > 0:
+                    payload_data = socket.recv(payload_size)
+                        
+                    if len(payload_data) < payload_size:
+                        print("Incomplete payload received, closing connection.")
+                        break
 
-        except Exception as e:
-            print(f"Error handling client: {e}")
-        finally:
-            socket.close()
+                self.handle_client_message(socket, header, payload_data)
+
+            except Exception as e:
+                print(f"Error handling client: {e}")
+                break
+                
+        socket.close()
 
     def handle_client_message(self, socket: socket.socket, header, payload_data):
         """
@@ -265,6 +277,8 @@ class Server:
 
         client_id = payload_data
 
+        print(f"Retrieving public key for client ID: {client_id}")
+
         for client in self.clients:
             if client.id == client_id:
                 client_key = client.public_key
@@ -273,8 +287,10 @@ class Server:
                 response_header = self.build_response_header(RESPONSE_CODES["PUBLIC_KEY"], len(response_payload))
                 socket.send(response_header)
                 socket.send(response_payload)
+                print(f"Public key sent for client ID: {client_id}")
                 return
 
+        print(f"Client not found: {client_id}")
         self.send_error_response(socket) # Client not found
 
     def handle_send_message(self, socket: socket.socket, header, payload_data: bytes = b""):

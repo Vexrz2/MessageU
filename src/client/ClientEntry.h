@@ -1,19 +1,20 @@
 #pragma once
 #include <string>
+#include <array>
 
 class ClientEntry
 {
 private:
-    std::string _uniqueId;
+    std::array<uint8_t, 16> _uuid;
     std::string _username;
     std::string _publicKey;
     std::string _symmetricKey;
 
 public:
 	ClientEntry() = default; // Default constructor
-    ClientEntry(const std::string& id, const std::string& name, const std::string& pubKey, const std::string& symKey)
-        : _uniqueId(id), _username(name), _publicKey(pubKey), _symmetricKey(symKey) {}
-    const std::string& getUniqueId() const { return _uniqueId; }
+    ClientEntry(const std::array<uint8_t, 16>& id, const std::string& name, const std::string& pubKey, const std::string& symKey)
+        : _uuid(id), _username(name), _publicKey(pubKey), _symmetricKey(symKey) {}
+    const std::array<uint8_t, 16>& getUUID() const { return _uuid; }
     const std::string& getName() const { return _username; }
     const std::string& getPublicKey() const { return _publicKey; }
     const std::string& getSymmetricKey() const { return _symmetricKey; }

@@ -17,7 +17,7 @@ public:
 
 #pragma pack(push, 1) // Ensure no padding is added to the structs
     struct RequestHeader {
-        char clientId[16];      // 16 bytes - unique client identifier
+		std::array<uint8_t, 16> clientId;      // 16 bytes - unique client identifier
         uint8_t version;        // 1 byte - client version
         uint16_t code;          // 2 bytes - request code
         uint32_t payloadSize;   // 4 bytes - payload size
@@ -84,11 +84,12 @@ public:
 	void connectToServer();
     bool ensureConnection();
 
-	void handleClientInput(int choice);
+	void cleanup();
 
     Client::RequestHeader buildRequestHeader(uint16_t code, uint32_t payloadSize);
 
 	// Handlers for client actions
+	void handleClientInput(int choice);
 	void handleRegister();
 	void handleGetClients();
 	void handleGetPublicKey();
@@ -96,5 +97,9 @@ public:
 	void handleSendMessage();
 	void handleGetSymmetricKey();   
 	void handleSendSymmetricKey();
+
+	// Helper functions
+	std::array<uint8_t, 16> hexStringToBytes(const std::string& hexString) const;
+	std::string bytesToHexString(const std::array<uint8_t, 16>& bytes) const;
 };
 

@@ -119,12 +119,11 @@ void Client::saveClientInfo()
         return;
     }
     clientFile << _clientName << std::endl;
-    // Convert client ID to hex string
-    for (const auto& byte : _clientId)
-    {
-        clientFile << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
-    }
+
+	// Save client ID converted to hex string to my.info
+    clientFile << bytesToHexString(_clientId);
     clientFile << std::endl;
+
     if (_rsaPrivateWrapper)
     {
         // Save private key in base64 format as single line
@@ -256,10 +255,19 @@ void Client::handleClientInput(int choice)
 		break;
 	case 0:
 		std::cout << "Exiting client." << std::endl;
+        cleanup();
 		exit(0);
     default:
         std::cout << "Bad input." << std::endl;
 	}
+}
+
+void Client::cleanup()
+{
+    if (_socket && _socket->is_open())
+    {
+        _socket->close();
+    }
 }
 
 Client::RequestHeader Client::buildRequestHeader(uint16_t code, uint32_t payloadSize)
@@ -272,10 +280,7 @@ Client::RequestHeader Client::buildRequestHeader(uint16_t code, uint32_t payload
 
     RequestHeader header;
 
-    // Copy client ID from class member
-    std::copy(_clientId.begin(), _clientId.end(), header.clientId);
-
-    // Set version
+    header.clientId = _clientId;
     header.version = static_cast<uint8_t>(VERSION);
     header.code = code;
     header.payloadSize = payloadSize;
@@ -418,20 +423,15 @@ void Client::handleGetClients()
             size_t offset = 0;
             while (offset < payloadSize)
             {
-                // Extract client ID (16 bytes) - convert to string
-                std::string clientId(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + 16);
-                offset += 16;
+                // Extract client ID (16 bytes)
+				std::array<uint8_t, CLIENT_ID_LENGTH> clientId;
+				std::copy(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + CLIENT_ID_LENGTH, clientId.begin());
+				offset += CLIENT_ID_LENGTH;
 
-                // Extract client name (255 bytes) - remove null padding
+                // Extract client name (255 bytes)
                 std::string name(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + MAX_CLIENT_NAME_LENGTH);
-                // Remove null terminators and padding
-                size_t nullPos = name.find('\0');
-                if (nullPos != std::string::npos) {
-                    name = name.substr(0, nullPos);
-                }
                 offset += MAX_CLIENT_NAME_LENGTH;
 
-                // Create ClientEntry with constructor (empty strings for keys we don't have yet)
                 ClientEntry entry(clientId, name, "", "");
                 _clients.push_back(entry);
             }
@@ -439,13 +439,7 @@ void Client::handleGetClients()
             for (const auto& client : _clients)
             {
                 // Convert client ID to hex string for display
-                std::string clientIdHex;
-                const std::string& uniqueId = client.getUniqueId();
-                for (size_t i = 0; i < uniqueId.size(); ++i) {
-                    std::stringstream ss;
-                    ss << std::hex << std::setw(2) << std::setfill('0') << (static_cast<unsigned int>(static_cast<unsigned char>(uniqueId[i])));
-                    clientIdHex += ss.str();
-                }
+				std::string clientIdHex = bytesToHexString(client.getUUID());
 
                 std::cout << "Client ID: " << clientIdHex << ", Name: " << client.getName() << std::endl;
             }
@@ -472,18 +466,76 @@ void Client::handleGetPublicKey()
         return;
     }
 
-    RequestHeader header = buildRequestHeader(_requestCodes["GET_PUBLIC_KEY"], 0);
+    std::string clientId;
+
+    // Receive clientID from user input
+    std::cout << "Please enter client ID: ";
+    std::cin.ignore(); // Clear the input buffer
+    std::getline(std::cin, clientId);
+
+	// Validate client ID length (must be 16 bytes in hex format)
+    if (clientId.length() != CLIENT_ID_LENGTH * 2)
+    {
+        std::cerr << "Error: Invalid client ID format. Must be 16 bytes in hex format." << std::endl;
+        return;
+	}
+
+    RequestHeader header = buildRequestHeader(_requestCodes["GET_PUBLIC_KEY"], CLIENT_ID_LENGTH);
     
     try
     {
         // Send request header
         boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
+
+		// Convert client ID from hex string to byte array
+		std::vector<char> clientIdBytes(CLIENT_ID_LENGTH);
+        for (size_t i = 0; i < CLIENT_ID_LENGTH; ++i)
+        {
+            std::string byteString = clientId.substr(i * 2, 2);
+            unsigned char byte = static_cast<unsigned char>(std::stoi(byteString, nullptr, 16));
+            clientIdBytes[i] = byte;
+		}
+
+		// Send client ID as payload
+		boost::asio::write(*_socket, boost::asio::buffer(clientIdBytes.data(), clientIdBytes.size()));
         
         // Read response
-        char response[1024];
-        size_t len = _socket->read_some(boost::asio::buffer(response));
-        
-        std::cout << "Received public key: " << std::string(response, len) << std::endl;
+        Client::ResponseHeader responseHeader;
+
+        size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
+        if (bytesRead != sizeof(responseHeader))
+        {
+            std::cerr << "Error reading response header from server" << std::endl;
+            return;
+        }
+        // Check response code
+        if (responseHeader.code == _responseCodes["ERROR"])
+        {
+            std::cerr << "Server error" << std::endl;
+            return;
+        }
+
+        if (responseHeader.code == _responseCodes["PUBLIC_KEY"])
+        {
+            // Read public key from response
+            uint32_t payloadSize = responseHeader.payloadSize;
+            std::vector<char> payloadBuffer(payloadSize);
+            boost::asio::read(*_socket, boost::asio::buffer(payloadBuffer.data(), payloadSize));
+            // Deserialize public key
+            std::string publicKey(payloadBuffer.begin(), payloadBuffer.end());
+
+			// Store public key in the corresponding client entry
+            for (auto& client : _clients)
+            {
+                if (client.getUUID() == (header.clientId)) // Compare with client ID
+                {
+                    client.setPublicKey(publicKey);
+                    break;
+                }
+			}
+
+			std::cout << "Successfully retrieved public key from client ID " << clientId << std::endl;
+        }
     }
     catch (std::exception& e)
     {
@@ -646,4 +698,29 @@ void Client::handleSendSymmetricKey()
         _isConnected = false;
         std::cerr << "Error sending symmetric key: " << e.what() << std::endl;
     }
+}
+
+std::array<uint8_t, 16> Client::hexStringToBytes(const std::string& hexString) const
+{
+    std::array<uint8_t, 16> bytes = {};
+    if (hexString.length() != 32) // 16 bytes in hex format
+    {
+        throw std::invalid_argument("Hex string must be 32 characters long");
+    }
+    for (size_t i = 0; i < 16; ++i)
+    {
+        std::string byteString = hexString.substr(i * 2, 2);
+        bytes[i] = static_cast<uint8_t>(std::stoi(byteString, nullptr, 16));
+    }
+	return bytes;
+}
+
+std::string Client::bytesToHexString(const std::array<uint8_t, 16>& bytes) const
+{
+    std::ostringstream oss;
+    for (const auto& byte : bytes)
+    {
+        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
+    }
+    return oss.str();
 }
