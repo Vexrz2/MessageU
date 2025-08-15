@@ -6,12 +6,17 @@
 
 #include <stdexcept>
 #include <immintrin.h>	// _rdrand32_step
+#include <random> // For ARM CPU temp
 
 
 unsigned char* AESWrapper::GenerateKey(unsigned char* buffer, unsigned int length)
 {
+	std::random_device rd;
 	for (size_t i = 0; i < length; i += sizeof(unsigned int))
-		_rdrand32_step(reinterpret_cast<unsigned int*>(&buffer[i]));
+	{
+		unsigned int randomValue = rd();
+		memcpy(&buffer[i], &randomValue, sizeof(unsigned int));
+	}
 	return buffer;
 }
 

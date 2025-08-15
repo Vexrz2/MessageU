@@ -7,6 +7,8 @@ from datetime import datetime
 DEFAULT_PORT = 1357
 HEADER_FORMAT = '<16sBHI' # client_id (16 bytes), version (1 byte), code (2 bytes), payload_size (4 bytes)
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+USERNAME_LENGTH = 255
+KEY_LENGTH = 160  # Length of public key in bytes
 VERSION = 1
 
 REQUEST_CODES = {
@@ -122,7 +124,6 @@ class Server:
                     print("Incomplete payload received, closing connection.")
                     return
 
-            print(f"Received header: {header_data}, payload: {len(payload_data)} bytes")
             self.handle_client_message(socket, header, payload_data)
 
         except Exception as e:
@@ -185,14 +186,14 @@ class Server:
         Response format:
         - Client ID (16 bytes)
         """
-        if len(payload_data) < 16:
+        if len(payload_data) < USERNAME_LENGTH + KEY_LENGTH:
             self.send_error_response(socket)
             return
 
         try:
             # Parse payload: username (255 bytes null terminated) + public_key
-            username = payload_data[:255].decode('utf-8').rstrip('\x00')
-            public_key = payload_data[255:]
+            username = payload_data[:USERNAME_LENGTH].decode('utf-8').rstrip('\x00')
+            public_key = payload_data[USERNAME_LENGTH:]
 
             # Check if username already exists
             for client in self.clients:
@@ -206,7 +207,7 @@ class Server:
             new_client = ClientEntry(user_id, username, public_key, datetime.now())
             self.clients.append(new_client)
 
-            response_header = self.build_response_header(RESPONSE_CODES["REGISTER_SUCCESS"], struct.calcsize(user_id))
+            response_header = self.build_response_header(RESPONSE_CODES["REGISTER_SUCCESS"], len(user_id))
             socket.send(response_header)
             
             response_payload = user_id
@@ -239,9 +240,9 @@ class Server:
             if client.id == client_id:
                 continue  # Skip the requesting client
             client_list.extend(client.id)
-            client_list.extend(client.username.encode('utf-8').ljust(255, b'\x00'))
+            client_list.extend(client.username.encode('utf-8').ljust(USERNAME_LENGTH, b'\x00'))
 
-        response_header = self.build_response_header(RESPONSE_CODES["CLIENT_LIST"], struct.calcsize(client_list))
+        response_header = self.build_response_header(RESPONSE_CODES["CLIENT_LIST"], len(client_list))
         socket.send(response_header)
 
         response_payload = client_list
@@ -269,7 +270,7 @@ class Server:
                 client_key = client.public_key
                 response_payload = client_id + client_key
 
-                response_header = self.build_response_header(RESPONSE_CODES["PUBLIC_KEY"], struct.calcsize(response_payload))
+                response_header = self.build_response_header(RESPONSE_CODES["PUBLIC_KEY"], len(response_payload))
                 socket.send(response_header)
                 socket.send(response_payload)
                 return
@@ -326,7 +327,7 @@ class Server:
             response_payload = to_client_id + msg_id.to_bytes(4, byteorder='little')
 
             # Send success response
-            response_header = self.build_response_header(RESPONSE_CODES["MESSAGE_SENT"], struct.calcsize(response_payload))
+            response_header = self.build_response_header(RESPONSE_CODES["MESSAGE_SENT"], len(response_payload))
             socket.send(response_header)
 
             socket.send(response_payload)
@@ -365,7 +366,7 @@ class Server:
             payload.extend(message.content)  # Message content (encrypted)
         
         # Send response
-        response_header = self.build_response_header(RESPONSE_CODES["MESSAGES_RECEIVED"], struct.calcsize(payload))
+        response_header = self.build_response_header(RESPONSE_CODES["MESSAGES_RECEIVED"], len(payload))
         socket.send(response_header)
         socket.send(payload)
         

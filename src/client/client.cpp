@@ -7,12 +7,13 @@
 #include <filters.h>
 #include <hex.h>
 #include <osrng.h>
+#include <iomanip>
 
 using boost::asio::ip::tcp;
 
 Client::Client()
-	: _rsaPrivateWrapper(), _aesWrapper(), _base64Wrapper(), _ioContext(std::make_unique<boost::asio::io_context>()), 
-      _socket(std::make_unique<tcp::socket>(*_ioContext))
+	: _ioContext(std::make_unique<boost::asio::io_context>()), _socket(std::make_unique<tcp::socket>(*_ioContext)),
+    _rsaPrivateWrapper(nullptr), _aesWrapper(nullptr)
 {
 	// Read Client info from my.info
     readClientInfo();
@@ -24,7 +25,7 @@ Client::Client()
 
 void Client::run()
 {
-	std::cout << "Client version: " << _version << std::endl;
+	std::cout << "Client version: " << VERSION << std::endl;
 
 	try 
     {
@@ -48,18 +49,18 @@ void Client::run()
 
 void Client::readClientInfo()
 {
-	// Read client ID and name from my.info, if already registered
+	// Read client ID and name from my.info, if already registered.
     // Format:
     // Line 1: Client name
     // Line 2: UUID in ASCII representation where every two characters represent an 8-bit hex value
     // Line 3: Private key generated on first program run in base64 format
-	std::ifstream clientFile("my.info");
-
+    std::ifstream clientFile(std::string("x64\\Release\\") + "my.info");
     if (!clientFile.is_open())
     {
-        std::cerr << "Error: Could not open my.info file" << std::endl;
-        _clientId = {};
+		// User is not registered yet, create a new temp client ID and name, generate a new RSA key pair.
+        _clientId = {0};
         _clientName = "";
+        _rsaPrivateWrapper = std::make_unique<RSAPrivateWrapper>();
         return;
 	}
 
@@ -69,48 +70,81 @@ void Client::readClientInfo()
         switch (i)
         {
         case 0:
-            if (line.empty() || line.length() >= 255)
+            if (line.empty() || line.length() > MAX_CLIENT_NAME_LENGTH)
             {
-				std::cerr << "Error: Client name has bad length." << std::endl;
-				_clientName = "";
-				return;
+                std::cerr << "Error: Client name has bad length." << std::endl;
+                _clientName = "";
+                return;
             }
-            _clientName = line; // Client name
+            // Read username from file
+            _clientName = line;
             break;
         case 1:
-            if (line.length() != 32) // Expecting 16 bytes in hex format (32 characters)
+            if (line.length() != CLIENT_ID_LENGTH * 2) // Expecting 16 bytes in hex format (32 characters)
             {
                 std::cerr << "Error: Invalid client ID format in my.info" << std::endl;
                 _clientId = {};
                 return;
-			}
-			_clientId.fill(0); // Initialize to zero
-			// Convert hex string to byte array
+            }
+
+            // Read Client ID from file
+            _clientId.fill(0);
             for (size_t j = 0; j < line.length(); j += 2)
             {
                 std::string byteString = line.substr(j, 2);
-                unsigned char byte = static_cast<unsigned char>(std::stoi(byteString, nullptr, 16));
+                unsigned char byte = static_cast<unsigned char>(std::stoi(byteString, nullptr, CLIENT_ID_LENGTH));
                 _clientId[j / 2] = byte;
-			}
+            }
             break;
         case 2:
-            std::string decodedKey = Base64Wrapper::decode(line);
-			_rsaPrivateWrapper = RSAPrivateWrapper(reinterpret_cast<const unsigned char*>(decodedKey.c_str()));
+            // Read private key from file
+			std::string decodedKey = Base64Wrapper::decode(line);
+            _rsaPrivateWrapper = std::make_unique<RSAPrivateWrapper>(decodedKey);
             break;
         }
 	}
+
+    // If we successfully read all details, we are registered already.
+    _isRegistered = true;
+}
+
+void Client::saveClientInfo()
+{
+    // Save client ID and name to my.info
+    std::ofstream clientFile(std::string("x64\\Release\\") + "my.info");
+    if (!clientFile.is_open())
+    {
+        std::cerr << "Error: Could not open my.info file for writing" << std::endl;
+        return;
+    }
+    clientFile << _clientName << std::endl;
+    // Convert client ID to hex string
+    for (const auto& byte : _clientId)
+    {
+        clientFile << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
+    }
+    clientFile << std::endl;
+    if (_rsaPrivateWrapper)
+    {
+        // Save private key in base64 format as single line
+        std::string encodedKey = Base64Wrapper::encode(_rsaPrivateWrapper->getPrivateKey());
+        encodedKey.erase(std::remove(encodedKey.begin(), encodedKey.end(), '\n'), encodedKey.end());
+        encodedKey.erase(std::remove(encodedKey.begin(), encodedKey.end(), '\r'), encodedKey.end());
+        clientFile << encodedKey << std::endl;
+    }
+    clientFile.close();
 }
 
 void Client::readServerInfo()
 {
 	// Read server address and port from server.info
-	std::ifstream serverFile("server.info");
+	std::ifstream serverFile(std::string("x64\\Release\\") + "server.info");
 	if (!serverFile.is_open())
 	{
 		// Default fallback
 		std::cerr << "Error: Could not open server.info file" << std::endl;
 		_serverAddress = "127.0.0.1";
-		_serverPort = 1357;            
+		_serverPort = DEFAULT_SERVER_PORT;
 		return;
 	}
 
@@ -128,21 +162,21 @@ void Client::readServerInfo()
 			catch (const std::exception& e)
 			{
 				std::cerr << "Error parsing port number, using default 1357" << std::endl;
-				_serverPort = 1357;
+				_serverPort = DEFAULT_SERVER_PORT;
 			}
 		}
 		else
 		{
 			std::cerr << "Invalid format in server.info, expected address:port" << std::endl;
 			_serverAddress = "127.0.0.1";
-			_serverPort = 1357;
+			_serverPort = DEFAULT_SERVER_PORT;
 		}
 	}
 	else
 	{
 		std::cerr << "Error reading server.info file" << std::endl;
 		_serverAddress = "127.0.0.1";
-		_serverPort = 1357;
+		_serverPort = DEFAULT_SERVER_PORT;
 	}
 
 	serverFile.close();}
@@ -220,9 +254,10 @@ void Client::handleClientInput(int choice)
 		handleSendSymmetricKey();
 		break;
 	case 0:
-	default:
 		std::cout << "Exiting client." << std::endl;
 		exit(0);
+    default:
+        std::cout << "Bad input." << std::endl;
 	}
 }
 
@@ -233,35 +268,103 @@ Client::RequestHeader Client::buildRequestHeader(uint16_t code, uint32_t payload
     // Version: 1 byte
     // Code: 2 bytes (request code)
     // Payload size: 4 bytes (content size)
-    
+
     RequestHeader header;
-    
-    // Initialize client ID (pad with zeros if shorter than 16 bytes)
-    memset(header.clientId, 0, 16);
-    if (!_clientId.empty()) {
-        size_t copySize = std::min(_clientId.length(), static_cast<size_t>(16));
-        memcpy(header.clientId, _clientId.c_str(), copySize);
-    }
-    
+
+    // Copy client ID from class member
+    std::copy(_clientId.begin(), _clientId.end(), header.clientId);
+
     // Set version
-    header.version = static_cast<uint8_t>(_version);
-    
-    // Code and payload size will be set by specific request handlers
-    header.code = 0;
-    header.payloadSize = 0;
-    
-	return header;
+    header.version = static_cast<uint8_t>(VERSION);
+    header.code = code;
+    header.payloadSize = payloadSize;
+
+    return header;
 }
 
 void Client::handleRegister()
 {
+    if (_isRegistered)
+    {
+        std::cerr << "You are already registered as " << _clientName  << std::endl;
+        return;
+	}
+
 	std::string username;
 	  
 	// Receive username from user input
 	std::cout << "Please enter desired username: ";
-	std::cin >> username;
+    std::cin.ignore(); // Clear the input buffer
+    std::getline(std::cin, username);
 
+    // Validate username length (max 254 chars to leave room for null terminator)
+    if (username.empty() || username.length() > (MAX_CLIENT_NAME_LENGTH - 1))
+    {
+        std::cerr << "Error: Username must be between 1 and " << (MAX_CLIENT_NAME_LENGTH - 1) << " characters long." << std::endl;
+        return;
+    }
 
+    // Create properly null-padded username string of exactly 255 bytes
+    std::string paddedUsername(MAX_CLIENT_NAME_LENGTH, '\0');
+    std::copy(username.begin(), username.end(), paddedUsername.begin());
+
+	_clientName = paddedUsername;
+
+	uint32_t payloadSize = MAX_CLIENT_NAME_LENGTH + RSAPublicWrapper::KEYSIZE; // Username + public key size
+	Client::RequestHeader header = buildRequestHeader(_requestCodes["REGISTER"], payloadSize);
+
+    // Create payload: username (255, null padded) + public key (160)
+	std::string publicKey = _rsaPrivateWrapper->getPublicKey();
+	std::string payload = paddedUsername + publicKey;
+
+	// Construct request buffer
+	std::vector<char> requestBuffer(sizeof(header) + payload.size());
+	std::memcpy(requestBuffer.data(), &header, sizeof(header));
+	std::memcpy(requestBuffer.data() + sizeof(header), payload.data(), payload.size());
+
+    try
+    {
+        if (!ensureConnection())
+        {
+            std::cerr << "Cannot perform operation: not connected to server" << std::endl;
+            return;
+        }
+        // Send request header and payload
+        boost::asio::write(*_socket, boost::asio::buffer(requestBuffer));
+
+        // Read response
+		Client::ResponseHeader responseHeader;
+
+        size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
+        if (bytesRead != sizeof(responseHeader))
+        {
+            std::cerr << "Error reading response header from server" << std::endl;
+            return;
+        }
+        // Check response code
+        if (responseHeader.code == _responseCodes["ERROR"])
+        {
+            std::cerr << "Server error" << std::endl;
+            return;
+		}
+
+        if (responseHeader.code == _responseCodes["REGISTER_SUCCESS"])
+        {
+            // Read client ID from response
+			uint32_t payloadSize = responseHeader.payloadSize;
+            boost::asio::read(*_socket, boost::asio::buffer(_clientId.data(), payloadSize));
+
+            std::cout << "Registration successful!" << std::endl;
+			saveClientInfo();
+            _isRegistered = true;
+        }
+    }
+    catch (std::exception& e)
+    {
+        std::cerr << "Error during registration: " << e.what() << std::endl;
+        _isConnected = false;
+        _isRegistered = false;
+	}
 }
 
 void Client::handleGetClients()
@@ -434,7 +537,7 @@ void Client::handleSendSymmetricKey()
         return;
     }
 
-    const unsigned char* key = _aesWrapper.getKey();
+    const unsigned char* key = _aesWrapper->getKey();
 
     if (key == nullptr)
     {
