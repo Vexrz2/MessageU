@@ -106,6 +106,7 @@ void Client::readClientInfo()
 
     // If we successfully read all details, we are registered already.
     _isRegistered = true;
+	std::cout << "Welcome back " << _clientName << "!" << std::endl;
 }
 
 void Client::saveClientInfo()
@@ -284,6 +285,12 @@ Client::RequestHeader Client::buildRequestHeader(uint16_t code, uint32_t payload
 
 void Client::handleRegister()
 {
+    if (!ensureConnection())
+    {
+        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
+        return;
+    }
+
     if (_isRegistered)
     {
         std::cerr << "You are already registered as " << _clientName  << std::endl;
@@ -324,11 +331,6 @@ void Client::handleRegister()
 
     try
     {
-        if (!ensureConnection())
-        {
-            std::cerr << "Cannot perform operation: not connected to server" << std::endl;
-            return;
-        }
         // Send request header and payload
         boost::asio::write(*_socket, boost::asio::buffer(requestBuffer));
 
@@ -375,20 +377,79 @@ void Client::handleGetClients()
         return;
     }
 
+    if (!_isRegistered)
+    {
+        std::cerr << "You must register first before requesting client list." << std::endl;
+        return;
+	}
+
     RequestHeader header = buildRequestHeader(_requestCodes["GET_CLIENTS"], 0);
-    header.code = _requestCodes["GET_CLIENTS"];
-    header.payloadSize = 0;
 
     try
     {
-        // Send request header
+		// Send request header (no payload)
         boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
         
         // Read response
-        char response[1024];
-        size_t len = _socket->read_some(boost::asio::buffer(response));
-        
-        std::cout << "Received response: " << std::string(response, len) << std::endl;
+        Client::ResponseHeader responseHeader;
+
+        size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
+        if (bytesRead != sizeof(responseHeader))
+        {
+            std::cerr << "Error reading response header from server" << std::endl;
+            return;
+        }
+        // Check response code
+        if (responseHeader.code == _responseCodes["ERROR"])
+        {
+            std::cerr << "Server error" << std::endl;
+            return;
+        }
+
+        if (responseHeader.code == _responseCodes["CLIENT_LIST"])
+        {
+			// Read client list from response
+            uint32_t payloadSize = responseHeader.payloadSize;
+            std::vector<char> payloadBuffer(payloadSize);
+            boost::asio::read(*_socket, boost::asio::buffer(payloadBuffer.data(), payloadSize));
+
+            // Deserialize client list
+            _clients.clear();
+            size_t offset = 0;
+            while (offset < payloadSize)
+            {
+                // Extract client ID (16 bytes) - convert to string
+                std::string clientId(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + 16);
+                offset += 16;
+
+                // Extract client name (255 bytes) - remove null padding
+                std::string name(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + MAX_CLIENT_NAME_LENGTH);
+                // Remove null terminators and padding
+                size_t nullPos = name.find('\0');
+                if (nullPos != std::string::npos) {
+                    name = name.substr(0, nullPos);
+                }
+                offset += MAX_CLIENT_NAME_LENGTH;
+
+                // Create ClientEntry with constructor (empty strings for keys we don't have yet)
+                ClientEntry entry(clientId, name, "", "");
+                _clients.push_back(entry);
+            }
+            std::cout << "Received client list:" << std::endl;
+            for (const auto& client : _clients)
+            {
+                // Convert client ID to hex string for display
+                std::string clientIdHex;
+                const std::string& uniqueId = client.getUniqueId();
+                for (size_t i = 0; i < uniqueId.size(); ++i) {
+                    std::stringstream ss;
+                    ss << std::hex << std::setw(2) << std::setfill('0') << (static_cast<unsigned int>(static_cast<unsigned char>(uniqueId[i])));
+                    clientIdHex += ss.str();
+                }
+
+                std::cout << "Client ID: " << clientIdHex << ", Name: " << client.getName() << std::endl;
+            }
+        }
     }
     catch (std::exception& e)
     {
@@ -405,9 +466,13 @@ void Client::handleGetPublicKey()
         return;
     }
 
+    if (!_isRegistered)
+    {
+        std::cerr << "You must register first before requesting public key." << std::endl;
+        return;
+    }
+
     RequestHeader header = buildRequestHeader(_requestCodes["GET_PUBLIC_KEY"], 0);
-    header.code = _requestCodes["GET_PUBLIC_KEY"];
-    header.payloadSize = 0;
     
     try
     {
@@ -435,9 +500,13 @@ void Client::handleGetMessages()
         return;
     }
 
+    if (!_isRegistered)
+    {
+        std::cerr << "You must register first before requesting messages." << std::endl;
+        return;
+	}
+
     RequestHeader header = buildRequestHeader(_requestCodes["GET_MESSAGES"], 0);
-    header.code = _requestCodes["GET_MESSAGES"];
-    header.payloadSize = 0;
     
     try
     {
@@ -465,6 +534,12 @@ void Client::handleSendMessage()
         return;
     }
 
+    if (!_isRegistered)
+    {
+        std::cerr << "You must register first before sending messages." << std::endl;
+		return;
+	}
+
     // Get recipient and message from user input
     std::string recipient, message;
     std::cout << "Enter recipient username: ";
@@ -479,8 +554,6 @@ void Client::handleSendMessage()
     
     // Build request header
     RequestHeader header = buildRequestHeader(_requestCodes["SEND_MESSAGE"], encryptedMessage.size());
-    header.code = _requestCodes["SEND_MESSAGE"];
-    header.payloadSize = encryptedMessage.size();
     
     try
     {
@@ -507,9 +580,13 @@ void Client::handleGetSymmetricKey()
         return;
     }
 
+    if (!_isRegistered)
+    {
+        std::cerr << "You must register first before requesting symmetric key." << std::endl;
+        return;
+    }
+
     RequestHeader header = buildRequestHeader(_requestCodes["GET_SYMMETRIC_KEY"], 0);
-    header.code = _requestCodes["GET_SYMMETRIC_KEY"];
-    header.payloadSize = 0;
     
     try
     {
@@ -537,6 +614,12 @@ void Client::handleSendSymmetricKey()
         return;
     }
 
+    if (!_isRegistered)
+    {
+        std::cerr << "You must register first before sending symmetric key." << std::endl;
+        return;
+	}
+
     const unsigned char* key = _aesWrapper->getKey();
 
     if (key == nullptr)
@@ -547,8 +630,6 @@ void Client::handleSendSymmetricKey()
 
     // Build request header
     RequestHeader header = buildRequestHeader(_requestCodes["SEND_SYMMETRIC_KEY"], AESWrapper::DEFAULT_KEYLENGTH);
-    header.code = _requestCodes["SEND_SYMMETRIC_KEY"];
-    header.payloadSize = AESWrapper::DEFAULT_KEYLENGTH;
 
     try
     {

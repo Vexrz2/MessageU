@@ -10,6 +10,7 @@ private:
     std::string _symmetricKey;
 
 public:
+	ClientEntry() = default; // Default constructor
     ClientEntry(const std::string& id, const std::string& name, const std::string& pubKey, const std::string& symKey)
         : _uniqueId(id), _username(name), _publicKey(pubKey), _symmetricKey(symKey) {}
     const std::string& getUniqueId() const { return _uniqueId; }
