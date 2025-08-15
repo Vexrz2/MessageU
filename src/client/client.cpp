@@ -12,8 +12,8 @@
 using boost::asio::ip::tcp;
 
 Client::Client()
-	: _ioContext(std::make_unique<boost::asio::io_context>()), _socket(std::make_unique<tcp::socket>(*_ioContext)),
-    _rsaPrivateWrapper(nullptr), _aesWrapper(nullptr)
+	: _ioContext(std::make_unique<boost::asio::io_context>()), 
+    _socket(std::make_unique<tcp::socket>(*_ioContext)), _rsaPrivateWrapper(nullptr)
 {
 	// Read Client info from my.info
     readClientInfo();
@@ -562,14 +562,162 @@ void Client::handleGetMessages()
     
     try
     {
-        // Send request header
+		// Send request header (no payload)
         boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
-        
+
         // Read response
-        char response[1024];
-        size_t len = _socket->read_some(boost::asio::buffer(response));
-        
-        std::cout << "Received messages: " << std::string(response, len) << std::endl;
+        Client::ResponseHeader responseHeader;
+
+        size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
+        if (bytesRead != sizeof(responseHeader))
+        {
+            std::cerr << "Error reading response header from server" << std::endl;
+            return;
+        }
+        // Check response code
+        if (responseHeader.code == _responseCodes["ERROR"])
+        {
+            std::cerr << "Server error" << std::endl;
+            return;
+        }
+
+        if (responseHeader.code == _responseCodes["MESSAGES_RECEIVED"])
+        {
+            // Read messages from response, one by one
+
+            uint32_t payloadSize = responseHeader.payloadSize;
+            std::vector<char> payloadBuffer(payloadSize);
+            boost::asio::read(*_socket, boost::asio::buffer(payloadBuffer.data(), payloadSize));
+
+            // Deserialize messages
+            // Deserialize messages
+            size_t offset = 0;
+            while (offset < payloadSize)
+            {
+                // Extract Client ID (16 bytes)
+                std::array<uint8_t, CLIENT_ID_LENGTH> senderClientId;
+                std::copy(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + CLIENT_ID_LENGTH, senderClientId.begin());
+                offset += CLIENT_ID_LENGTH;
+
+                // Extract Message ID (4 bytes)
+                uint32_t messageId;
+                std::memcpy(&messageId, payloadBuffer.data() + offset, sizeof(messageId));
+                offset += sizeof(messageId);
+
+                // Extract Message Type (1 byte)
+                uint8_t messageType;
+                std::memcpy(&messageType, payloadBuffer.data() + offset, sizeof(messageType));
+                offset += sizeof(messageType);
+
+                // Extract Message Size (4 bytes)
+                uint32_t messageSize;
+                std::memcpy(&messageSize, payloadBuffer.data() + offset, sizeof(messageSize));
+                offset += sizeof(messageSize);
+
+                // Extract Message Content (messageSize bytes)
+                std::string content(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + messageSize);
+                offset += messageSize;
+
+                // Find sender name by Client ID
+                std::string senderName = "Unknown";
+                for (const auto& client : _clients)
+                {
+                    if (client.getUUID() == senderClientId)
+                    {
+                        senderName = client.getName();
+                        break;
+                    }
+                }
+
+                switch (messageType)
+                {
+                case 1: // Request for symmetric key
+                    std::cout << "From: " << senderName << std::endl;
+                    std::cout << "Content: Request for symmetric key" << std::endl;
+                    break;
+
+                case 2: // Send symmetric key
+                {
+                    std::cout << "From: " << senderName << std::endl;
+                    std::cout << "Content: " << std::endl;
+
+                    // Decrypt symmetric key using RSA private key
+                    if (_rsaPrivateWrapper)
+                    {
+                        try
+                        {
+                            std::string decryptedKey = _rsaPrivateWrapper->decrypt(content);
+
+                            // Find the client and store the symmetric key
+                            for (auto& client : _clients)
+                            {
+                                if (client.getUUID() == senderClientId)
+                                {
+                                    client.setSymmetricKey(decryptedKey);
+                                    break;
+                                }
+                            }
+
+                            std::cout << "Received symmetric key from " << senderName << std::endl;
+                        }
+                        catch (const std::exception& e)
+                        {
+                            std::cerr << "Error decrypting symmetric key: " << e.what() << std::endl;
+                        }
+                    }
+                    else
+                    {
+                        std::cerr << "Error: RSA private key not available" << std::endl;
+                    }
+                }
+                break;
+
+                case 3: // Text message
+                {
+                    std::cout << "From: " << senderName << std::endl;
+                    std::cout << "Content: " << std::endl;
+
+                    // Find the symmetric key for this sender
+                    std::string symmetricKey;
+                    for (const auto& client : _clients)
+                    {
+                        if (client.getUUID() == senderClientId)
+                        {
+                            symmetricKey = client.getSymmetricKey();
+                            break;
+                        }
+                    }
+
+                    if (!symmetricKey.empty())
+                    {
+                        try
+                        {
+                            // Decrypt message using AES symmetric key
+                            AESWrapper aesWrapper(reinterpret_cast<const unsigned char*>(symmetricKey.c_str()), symmetricKey.length());
+                            std::string decryptedMessage = aesWrapper.decrypt(content.c_str(), content.length());
+                            std::cout << decryptedMessage << std::endl;
+                        }
+                        catch (const std::exception& e)
+                        {
+                            std::cerr << "Error decrypting message: " << e.what() << std::endl;
+                        }
+                    }
+                    else
+                    {
+                        std::cout << "Can't decrypt message" << std::endl;
+                    }
+                }
+                break;
+
+                default:
+                    std::cout << "From: " << senderName << std::endl;
+                    std::cout << "Content: Unknown message type (" << static_cast<int>(messageType) << ")" << std::endl;
+                    break;
+                }
+
+                std::cout << "-----<EOM>-----" << std::endl;
+            }
+        }
     }
     catch (std::exception& e)
     {
@@ -630,7 +778,7 @@ void Client::handleGetSymmetricKey()
     {
         std::cerr << "Cannot perform operation: not connected to server" << std::endl;
         return;
-    }
+    }  
 
     if (!_isRegistered)
     {
@@ -672,14 +820,6 @@ void Client::handleSendSymmetricKey()
         return;
 	}
 
-    const unsigned char* key = _aesWrapper->getKey();
-
-    if (key == nullptr)
-    {
-        std::cerr << "Error: Symmetric key is not set." << std::endl;
-        return;
-    }
-
     // Build request header
     RequestHeader header = buildRequestHeader(_requestCodes["SEND_SYMMETRIC_KEY"], AESWrapper::DEFAULT_KEYLENGTH);
 
@@ -688,8 +828,7 @@ void Client::handleSendSymmetricKey()
         // Send request header
         boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
         
-        // Send symmetric key
-        boost::asio::write(*_socket, boost::asio::buffer(key, AESWrapper::DEFAULT_KEYLENGTH));
+        // 
         
         std::cout << "Symmetric key sent successfully." << std::endl;
     }

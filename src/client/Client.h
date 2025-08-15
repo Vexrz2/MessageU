@@ -28,11 +28,6 @@ public:
 		uint32_t payloadSize;   // 4 bytes - payload size
 	};
 #pragma pack(pop)
-	struct Message {
-		std::string sender;
-		std::string recipient;
-		std::string content;
-	};
 
 private:
 	// Other clients
@@ -52,9 +47,8 @@ private:
 	std::unique_ptr<boost::asio::io_context> _ioContext;
 	std::unique_ptr<boost::asio::ip::tcp::socket> _socket;
 
-	// Encryption wrappers
+	// Key pair wrapper
     std::unique_ptr<RSAPrivateWrapper> _rsaPrivateWrapper;
-	std::unique_ptr<AESWrapper> _aesWrapper;
 
     // Request/response codes
     std::map<std::string, uint16_t> _requestCodes = {

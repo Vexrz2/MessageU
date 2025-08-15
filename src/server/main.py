@@ -203,6 +203,8 @@ class Server:
             return
 
         try:
+            print("Handling registration request...")
+            
             # Parse payload: username (255 bytes null terminated) + public_key
             username = payload_data[:USERNAME_LENGTH].decode('utf-8').rstrip('\x00')
             public_key = payload_data[USERNAME_LENGTH:]
@@ -210,6 +212,7 @@ class Server:
             # Check if username already exists
             for client in self.clients:
                 if client.username == username:
+                    print(f"Username already exists: {username}")
                     self.send_error_response(socket)
                     return
 
@@ -245,6 +248,8 @@ class Server:
         - Client List (255 + 16) * num_clients bytes
         """
         client_id = header[0]
+
+        print(f"Retrieving client list for client ID: {client_id}")
 
         # Build client list
         client_list = bytearray()
