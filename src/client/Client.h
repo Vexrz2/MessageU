@@ -23,8 +23,8 @@ private:
 	std::vector<ClientEntry> _clients;
 
 	// Client-specific information
-    std::string _clientId;
-    std::string _clientName;
+	std::array<uint8_t, 16> _clientId; // 16 byte UUID
+	std::string _clientName; // Client name, max 255 chars
 
 	// Server connection information
 	std::string _serverAddress;

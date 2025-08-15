@@ -48,18 +48,57 @@ void Client::run()
 
 void Client::readClientInfo()
 {
-	// Read client ID and name from my.info
+	// Read client ID and name from my.info, if already registered
+    // Format:
+    // Line 1: Client name
+    // Line 2: UUID in ASCII representation where every two characters represent an 8-bit hex value
+    // Line 3: Private key generated on first program run in base64 format
 	std::ifstream clientFile("my.info");
 
     if (!clientFile.is_open())
     {
         std::cerr << "Error: Could not open my.info file" << std::endl;
-        _clientId = "default_client_id";
-        _clientName = "default_client_name";
+        _clientId = {};
+        _clientName = "";
         return;
 	}
 
-
+	std::string line;
+    for (int i = 0; i < 3 && std::getline(clientFile, line); ++i)
+    {
+        switch (i)
+        {
+        case 0:
+            if (line.empty() || line.length() >= 255)
+            {
+				std::cerr << "Error: Client name has bad length." << std::endl;
+				_clientName = "";
+				return;
+            }
+            _clientName = line; // Client name
+            break;
+        case 1:
+            if (line.length() != 32) // Expecting 16 bytes in hex format (32 characters)
+            {
+                std::cerr << "Error: Invalid client ID format in my.info" << std::endl;
+                _clientId = {};
+                return;
+			}
+			_clientId.fill(0); // Initialize to zero
+			// Convert hex string to byte array
+            for (size_t j = 0; j < line.length(); j += 2)
+            {
+                std::string byteString = line.substr(j, 2);
+                unsigned char byte = static_cast<unsigned char>(std::stoi(byteString, nullptr, 16));
+                _clientId[j / 2] = byte;
+			}
+            break;
+        case 2:
+            std::string decodedKey = Base64Wrapper::decode(line);
+			_rsaPrivateWrapper = RSAPrivateWrapper(reinterpret_cast<const unsigned char*>(decodedKey.c_str()));
+            break;
+        }
+	}
 }
 
 void Client::readServerInfo()
