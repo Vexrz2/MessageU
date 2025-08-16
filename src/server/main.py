@@ -447,32 +447,35 @@ class Server:
 
         # Validate content size
         if len(content) != message_size:
+            print(f"Invalid content size: expected {message_size}, got {len(content)}")
             self.send_error_response(socket)
             return
 
         # Check if recipient exists in cache
         if to_client_id in self.clients_cache:
+            print(f"Recipient found: {to_client_id}")
             # Create message
             from_client = header[0]
             new_message = MessageEntry(None, to_client_id, from_client, msg_type, content)
-            
+            print(f"Creating new message: {new_message}")
             # Save to database first to get the ID
             msg_id = self.save_message_to_db(new_message)
             new_message.id = msg_id
-
+            print(f"Message saved with ID: {msg_id}")
             # Add to pending messages
             if to_client_id not in self.pending_messages:
                 self.pending_messages[to_client_id] = []
             self.pending_messages[to_client_id].append(new_message)
-
+            print(f"Pending messages for {to_client_id}: {self.pending_messages[to_client_id]}")
             response_payload = to_client_id + msg_id.to_bytes(4, byteorder='little')
 
             # Send success response
             response_header = self.build_response_header(RESPONSE_CODES["MESSAGE_SENT"], len(response_payload))
             socket.send(response_header)
-
+            print(f"Message sent: {response_payload}")
             socket.send(response_payload)
         else:
+            print(f"Recipient not found: {to_client_id}")
             self.send_error_response(socket)
 
     def handle_get_messages(self, socket: socket.socket, header):

@@ -834,17 +834,8 @@ void Client::handleSendMessage(int type)
 	}
 	case static_cast<int>(MessageType::REQ_SYM_KEY):
 	{
-		// Empty message for symmetric key request, but still needs to be encrypted
-		message = ""; // No content for symmetric key request
-
-		// Encrypt message using recipient's public key
-		RSAPublicWrapper rsaPublicWrapper(publicKey);
-		encryptedMessage = rsaPublicWrapper.encrypt(message);
-		if (encryptedMessage.empty())
-		{
-			std::cerr << "Error: Failed to encrypt request for symmetric key." << std::endl;
-			return;
-		}
+		// Empty message for symmetric key request
+        encryptedMessage = "";
 		break;
 	}
 	case static_cast<int>(MessageType::SEND_SYM_KEY):
@@ -862,16 +853,45 @@ void Client::handleSendMessage(int type)
 	}
 	}
 
+	// Build payload
+	uint32_t payloadSize = CLIENT_ID_LENGTH + sizeof(uint8_t) + sizeof(uint32_t) + encryptedMessage.size();
+	// Payload structure:
+	// Client ID (16 bytes)  + Message Type (1 byte) + Message Size (4 bytes) + Encrypted Message
+	std::vector<char> payloadBuffer(payloadSize);
+	size_t offset = 0;
+	// Copy recipient Client ID
+	std::copy(recipientId.begin(), recipientId.end(), payloadBuffer.data() + offset);
+	offset += CLIENT_ID_LENGTH;
+	// Copy message type
+	uint8_t messageType = static_cast<uint8_t>(type);
+	std::memcpy(payloadBuffer.data() + offset, &messageType, sizeof(messageType));
+	offset += sizeof(messageType);
+	// Copy message size
+	uint32_t messageSize = static_cast<uint32_t>(encryptedMessage.size());
+	std::memcpy(payloadBuffer.data() + offset, &messageSize, sizeof(messageSize));
+	offset += sizeof(messageSize);
+	// Copy encrypted message
+	std::memcpy(payloadBuffer.data() + offset, encryptedMessage.data(), encryptedMessage.size());
+
+
+
     // Build request header
-    RequestHeader header = buildRequestHeader(_requestCodes["SEND_MESSAGE"], encryptedMessage.size());
+    RequestHeader header = buildRequestHeader(_requestCodes["SEND_MESSAGE"], payloadSize);
     
     try
     {
         // Send request header
         boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
+
+		// DEbug print bytes of request header
+		std::cout << "Request header sent: "
+            << "Client ID: " << bytesToHexString(header.clientId) << ", "
+                  << "Version: " << static_cast<int>(header.version) << ", "
+                  << "Code: " << header.code << ", "
+			<< "Payload Size: " << header.payloadSize << std::endl;
         
-        // Send encrypted message
-        boost::asio::write(*_socket, boost::asio::buffer(encryptedMessage));
+        // Send payload
+        boost::asio::write(*_socket, boost::asio::buffer(payloadBuffer));
 
 		// Read response
 		Client::ResponseHeader responseHeader;
