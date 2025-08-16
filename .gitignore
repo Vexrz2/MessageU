@@ -24,7 +24,9 @@
 *.VC.db
 *.VC.opendb
 
+# Run - specific files
 my.info
+defensive.db
 
 # ========================
 # Python

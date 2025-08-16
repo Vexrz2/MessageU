@@ -2,6 +2,7 @@ import socket
 import uuid
 import struct
 import threading
+import sqlite3
 from datetime import datetime
 
 DEFAULT_PORT = 1357
@@ -41,19 +42,6 @@ class ClientEntry:
         self.public_key = public_key
         self.last_seen = last_seen
         
-    def update_last_seen(self):
-        """Update the last seen timestamp"""
-        self.last_seen = datetime.now()
-    
-    def to_dict(self) -> dict:
-        """Convert client to dictionary for serialization"""
-        return {
-            'id': self.id,
-            'username': self.username,
-            'public_key': self.public_key,
-            'last_seen': self.last_seen
-        }
-        
 class MessageEntry:
     """
     id: 4 bytes index
@@ -68,21 +56,152 @@ class MessageEntry:
         self.from_client = from_client
         self.type = type
         self.content = content
-        
-    def is_for_client(self, client_id: bytes) -> bool:
-        """Check if message is for the specified client"""
-        return self.to_client == client_id
 
 class Server:
     def __init__(self):
-        # Add a list of made up clients
-        self.clients = [
-            ClientEntry(id=uuid.uuid4().bytes, username="Alice", public_key=b'\x00' * 160, last_seen=datetime.now()),
-            ClientEntry(id=uuid.uuid4().bytes, username="Bob", public_key=b'\x00' * 160, last_seen=datetime.now()),
-            ClientEntry(id=uuid.uuid4().bytes, username="Charlie", public_key=b'\x00' * 160, last_seen=datetime.now())
-        ]
-        self.messages = []
+        self.db_path = "defensive.db"
+        self.init_database()
+        
+        self.clients_cache = {}
+        self.load_clients_cache()
+        
         self.pending_messages = {}
+
+    def init_database(self):
+        """Create database tables if they don't exist"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Create clients table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS clients (
+                id BLOB PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                public_key BLOB NOT NULL,
+                last_seen TIMESTAMP NOT NULL
+            )
+        ''')
+        
+        # Create messages table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                to_client BLOB NOT NULL,
+                from_client BLOB NOT NULL,
+                type INTEGER NOT NULL,
+                content BLOB NOT NULL,
+                FOREIGN KEY (to_client) REFERENCES clients (id),
+                FOREIGN KEY (from_client) REFERENCES clients (id)
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        print("Database initialized successfully")
+
+    def load_clients_cache(self):
+        """Load all clients into memory cache for fast lookups"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT id, username, public_key, last_seen FROM clients')
+        clients_data = cursor.fetchall()
+        
+        self.clients_cache = {}
+        for client_data in clients_data:
+            client = ClientEntry(
+                id=client_data[0],
+                username=client_data[1],
+                public_key=client_data[2],
+                last_seen=datetime.fromisoformat(client_data[3])
+            )
+            self.clients_cache[client.id] = client
+        
+        conn.close()
+        print(f"Loaded {len(self.clients_cache)} clients into cache from database")
+
+    def save_client_to_db(self, client: ClientEntry):
+        """Save a single client to database"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT OR REPLACE INTO clients (id, username, public_key, last_seen)
+            VALUES (?, ?, ?, ?)
+        ''', (client.id, client.username, client.public_key, client.last_seen.isoformat()))
+        
+        conn.commit()
+        conn.close()
+
+    def save_message_to_db(self, message: MessageEntry):
+        """Save a single message to database and return the ID"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO messages (to_client, from_client, type, content)
+            VALUES (?, ?, ?, ?)
+        ''', (message.to_client, message.from_client, message.type, message.content))
+        
+        message_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return message_id
+
+    def get_messages_from_db(self, client_id: bytes):
+        """Get all messages for a client from database"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, to_client, from_client, type, content 
+            FROM messages WHERE to_client = ?
+        ''', (client_id,))
+        
+        messages_data = cursor.fetchall()
+        messages = []
+        
+        for msg_data in messages_data:
+            message = MessageEntry(
+                id=msg_data[0],
+                to_client=msg_data[1], 
+                from_client=msg_data[2],
+                type=msg_data[3],
+                content=msg_data[4]
+            )
+            messages.append(message)
+        
+        conn.close()
+        return messages
+
+    def delete_messages_from_db(self, client_id: bytes):
+        """Delete all messages for a client from database"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM messages WHERE to_client = ?', (client_id,))
+        
+        conn.commit()
+        conn.close()
+
+    def update_client_last_seen_db(self, client_id: bytes):
+        """Update client's last seen timestamp in database"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE clients SET last_seen = ? WHERE id = ?
+        ''', (datetime.now().isoformat(), client_id))
+        
+        conn.commit()
+        conn.close()
+
+    def find_client_by_username(self, username: str):
+        """Find client by username in cache"""
+        for client in self.clients_cache.values():
+            if client.username == username:
+                return client
+        return None
 
     def run(self):
         port = self.read_port()
@@ -91,12 +210,15 @@ class Server:
         self.server_socket.listen()
         print(f"Server started on port {port}")
 
-        while True:
-            client_socket, addr = self.server_socket.accept()
-            print(f"Accepted connection from {addr}")
-
-            # Start a new thread to handle the client
-            threading.Thread(target=self.handle_client, args=(client_socket,)).start()
+        try:
+            while True:
+                client_socket, addr = self.server_socket.accept()
+                print(f"Accepted connection from {addr}")
+                threading.Thread(target=self.handle_client, args=(client_socket,)).start()
+        except KeyboardInterrupt:
+            print("\nShutting down server...")
+        finally:
+            self.server_socket.close()
 
     # Read the port number from a file
     def read_port(self):
@@ -162,12 +284,11 @@ class Server:
 
         code = header[2]
 
-        # Update last seen timestamp
+        # Update last seen timestamp in database and cache
         client_id = header[0]
-        for client in self.clients:
-            if client.id == client_id:
-                client.last_seen = datetime.now()
-                break
+        if client_id in self.clients_cache:
+            self.clients_cache[client_id].last_seen = datetime.now()
+            self.update_client_last_seen_db(client_id)
 
         if code == REQUEST_CODES["REGISTER"]:
             self.handle_register(socket, header, payload_data)
@@ -209,18 +330,18 @@ class Server:
             username = payload_data[:USERNAME_LENGTH].decode('utf-8').rstrip('\x00')
             public_key = payload_data[USERNAME_LENGTH:]
 
-            # Check if username already exists
-            for client in self.clients:
-                if client.username == username:
-                    print(f"Username already exists: {username}")
-                    self.send_error_response(socket)
-                    return
+            # Check if username already exists in cache
+            if self.find_client_by_username(username):
+                print(f"Username already exists: {username}")
+                self.send_error_response(socket)
+                return
 
             user_id = uuid.uuid4().bytes
             
-            # Add user to client list
+            # Create and save client
             new_client = ClientEntry(user_id, username, public_key, datetime.now())
-            self.clients.append(new_client)
+            self.save_client_to_db(new_client)
+            self.clients_cache[user_id] = new_client
 
             response_header = self.build_response_header(RESPONSE_CODES["REGISTER_SUCCESS"], len(user_id))
             socket.send(response_header)
@@ -251,9 +372,9 @@ class Server:
 
         print(f"Retrieving client list for client ID: {client_id}")
 
-        # Build client list
+        # Build client list from cache
         client_list = bytearray()
-        for client in self.clients:
+        for client in self.clients_cache.values():
             if client.id == client_id:
                 continue  # Skip the requesting client
             client_list.extend(client.id)
@@ -284,16 +405,17 @@ class Server:
 
         print(f"Retrieving public key for client ID: {client_id}")
 
-        for client in self.clients:
-            if client.id == client_id:
-                client_key = client.public_key
-                response_payload = client_id + client_key
+        # Look up in cache
+        if client_id in self.clients_cache:
+            client = self.clients_cache[client_id]
+            client_key = client.public_key
+            response_payload = client_id + client_key
 
-                response_header = self.build_response_header(RESPONSE_CODES["PUBLIC_KEY"], len(response_payload))
-                socket.send(response_header)
-                socket.send(response_payload)
-                print(f"Public key sent for client ID: {client_id}")
-                return
+            response_header = self.build_response_header(RESPONSE_CODES["PUBLIC_KEY"], len(response_payload))
+            socket.send(response_header)
+            socket.send(response_payload)
+            print(f"Public key sent for client ID: {client_id}")
+            return
 
         print(f"Client not found: {client_id}")
         self.send_error_response(socket) # Client not found
@@ -328,19 +450,15 @@ class Server:
             self.send_error_response(socket)
             return
 
-        # Find recipient
-        recipient = None
-        for client in self.clients:
-            if client.id == to_client_id:
-                recipient = client
-                break
-
-        if recipient:
-            # Add message to message list
-            msg_id = len(self.messages) + 1
+        # Check if recipient exists in cache
+        if to_client_id in self.clients_cache:
+            # Create message
             from_client = header[0]
-            new_message = MessageEntry(msg_id, to_client_id, from_client, msg_type, content)
-            self.messages.append(new_message)
+            new_message = MessageEntry(None, to_client_id, from_client, msg_type, content)
+            
+            # Save to database first to get the ID
+            msg_id = self.save_message_to_db(new_message)
+            new_message.id = msg_id
 
             # Add to pending messages
             if to_client_id not in self.pending_messages:
@@ -379,6 +497,10 @@ class Server:
         # Get pending messages for this client
         pending = self.pending_messages.get(client_id, [])
         
+        # If no pending messages in memory, check database
+        if not pending:
+            pending = self.get_messages_from_db(client_id)
+        
         # Prepare response payload
         payload = bytearray()
         
@@ -395,9 +517,12 @@ class Server:
         socket.send(response_header)
         socket.send(payload)
         
-        # Clear pending messages for this client
+        # Clear pending messages and delete from database
         if client_id in self.pending_messages:
             self.pending_messages[client_id] = []
+        
+        # Delete retrieved messages from database
+        self.delete_messages_from_db(client_id)
 
     def build_response_header(self, code: int, payload_size: int) -> bytes:
         """
