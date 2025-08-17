@@ -12,7 +12,7 @@ class Client
 public:
 	static const int VERSION = 1;
 	static const int MAX_CLIENT_NAME_LENGTH = 255;
-	static const int CLIENT_ID_LENGTH = 16; // UUID length in bytes
+	static const int CLIENT_ID_LENGTH = 16;
 	static const int DEFAULT_SERVER_PORT = 1357;
 	
 	std::string PATH = ""; // Path to store client files
@@ -37,8 +37,8 @@ private:
 
 	// Client-specific information
 	bool _isRegistered = false;
-	std::array<uint8_t, 16> _clientId; // 16 byte UUID
-	std::string _clientName; // Client name, max 255 chars
+	std::array<uint8_t, 16> _clientId;
+	std::string _clientName;
 
 	// Server connection information
 	std::string _serverAddress;
@@ -69,6 +69,14 @@ private:
         {"ERROR", 9000}
     };
 
+	struct IncomingMessageHeader
+	{
+		std::array<uint8_t, CLIENT_ID_LENGTH> senderClientId;
+		uint32_t messageId;
+		uint8_t messageType;
+		uint32_t messageSize;
+	};
+
 	// Message types
 	enum class MessageType {
 		REQ_SYM_KEY = 1,
@@ -78,18 +86,20 @@ private:
 
 
 public:
+	// Constructor and destructor
 	Client();
+
+	// Lifecycle methods
     void run();
 	void promptForInput();
-    void readClientInfo();
-	void saveClientInfo();
-    void readServerInfo();
 	void connectToServer();
     bool ensureConnection();
-
 	void cleanup();
 
-    Client::RequestHeader buildRequestHeader(uint16_t code, uint32_t payloadSize);
+	// Client information management (file I/O)
+	void readClientInfo();
+	void saveClientInfo();
+	void readServerInfo();
 
 	// Handlers for client actions
 	void handleClientInput(int choice);
@@ -99,8 +109,30 @@ public:
 	void handleGetMessages();
 	void handleSendMessage(int type);
 
+	// Registration helper functions
+	std::string getUsernameInput(const std::string& prompt);
+
+	// Get client list helper functions
+	void processClientList(const std::vector<char>& payloadBuffer);
+	void displayClientList() const;
+
+	// Get messages helper functions
+	void processIncomingMessages(const std::vector<char>& payloadBuffer);
+	bool parseMessageHeader(const std::vector<char>& payloadBuffer, size_t& offset, IncomingMessageHeader& messageHeader);
+	std::string getSenderName(const std::array<uint8_t, CLIENT_ID_LENGTH>& senderClientId) const;
+	void processMessage(const IncomingMessageHeader& messageHeader, const std::string& content, const std::string& senderName);
+	void processSymmetricKeyMessage(const std::string& content, const std::array<uint8_t, CLIENT_ID_LENGTH>& senderClientId, const std::string& senderName);
+	void processTextMessage(const std::string& content, const std::array<uint8_t, CLIENT_ID_LENGTH>& senderClientId);
+
+	// Send message helper functions
+	bool validateKeysForMessageType(int messageType, const ClientEntry& recipient);
+
 	// Helper functions
+    Client::RequestHeader buildRequestHeader(uint16_t code, uint32_t payloadSize);
+	bool sendRequestAndReadResponse(const RequestHeader& header, const std::vector<char>& payload, ResponseHeader& responseHeader, std::vector<char>& responsePayload);
 	std::array<uint8_t, 16> hexStringToBytes(const std::string& hexString) const;
 	std::string bytesToHexString(const std::array<uint8_t, 16>& bytes) const;
+	ClientEntry* findClientByName(const std::string& username);
+	ClientEntry* findClientByUUID(const std::array<uint8_t, 16>& uuid);
 };
 

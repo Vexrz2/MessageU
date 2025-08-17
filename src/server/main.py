@@ -10,7 +10,7 @@ HEADER_FORMAT = '<16sBHI' # client_id (16 bytes), version (1 byte), code (2 byte
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 USERNAME_LENGTH = 255
 KEY_LENGTH = 160  # Length of public key in bytes
-VERSION = 1
+VERSION = 2
 
 REQUEST_CODES = {
             "REGISTER": 600,
@@ -204,6 +204,7 @@ class Server:
         return None
 
     def run(self):
+        """Start the server."""
         port = self.read_port()
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind(("0.0.0.0", port))
@@ -220,8 +221,8 @@ class Server:
         finally:
             self.server_socket.close()
 
-    # Read the port number from a file
     def read_port(self):
+        """Read the port number from myport.info."""
         try:
             f = open("myport.info", "r")
             port = int(f.read().strip())
@@ -232,6 +233,7 @@ class Server:
             return DEFAULT_PORT
 
     def handle_client(self, socket: socket.socket):
+        """Handle incoming client connection."""
         while True:
             try:
                 # Read header
@@ -370,7 +372,7 @@ class Server:
         """
         client_id = header[0]
 
-        print(f"Retrieving client list for client ID: {client_id}")
+        print(f"Retrieving client list for client ID: {client_id.hex()}")
 
         # Build client list from cache
         client_list = bytearray()
@@ -403,7 +405,7 @@ class Server:
 
         client_id = payload_data
 
-        print(f"Retrieving public key for client ID: {client_id}")
+        print(f"Retrieving {client_id.hex()}'s public key for client ID: {header[0].hex()}")
 
         # Look up in cache
         if client_id in self.clients_cache:
@@ -414,10 +416,10 @@ class Server:
             response_header = self.build_response_header(RESPONSE_CODES["PUBLIC_KEY"], len(response_payload))
             socket.send(response_header)
             socket.send(response_payload)
-            print(f"Public key sent for client ID: {client_id}")
+            print(f"{client_id.hex()}'s public key sent to client ID: {header[0].hex()}")
             return
 
-        print(f"Client not found: {client_id}")
+        print(f"Client not found: {client_id.hex()}")
         self.send_error_response(socket) # Client not found
 
     def handle_send_message(self, socket: socket.socket, header, payload_data: bytes = b""):
@@ -442,8 +444,8 @@ class Server:
         msg_type = payload_data[16]
         message_size = int.from_bytes(payload_data[17:21], byteorder='little')
         content = payload_data[21:]
-        
-        print(f"Sending message from {header[0]} to {to_client_id}")
+
+        print(f"Sending message from {header[0].hex()} to {to_client_id.hex()}")
 
         # Validate content size
         if len(content) != message_size:
@@ -453,29 +455,26 @@ class Server:
 
         # Check if recipient exists in cache
         if to_client_id in self.clients_cache:
-            print(f"Recipient found: {to_client_id}")
             # Create message
             from_client = header[0]
             new_message = MessageEntry(None, to_client_id, from_client, msg_type, content)
-            print(f"Creating new message: {new_message}")
+            
             # Save to database first to get the ID
             msg_id = self.save_message_to_db(new_message)
             new_message.id = msg_id
-            print(f"Message saved with ID: {msg_id}")
+            
             # Add to pending messages
             if to_client_id not in self.pending_messages:
                 self.pending_messages[to_client_id] = []
             self.pending_messages[to_client_id].append(new_message)
-            print(f"Pending messages for {to_client_id}: {self.pending_messages[to_client_id]}")
             response_payload = to_client_id + msg_id.to_bytes(4, byteorder='little')
 
             # Send success response
             response_header = self.build_response_header(RESPONSE_CODES["MESSAGE_SENT"], len(response_payload))
             socket.send(response_header)
-            print(f"Message sent: {response_payload}")
             socket.send(response_payload)
         else:
-            print(f"Recipient not found: {to_client_id}")
+            print(f"Recipient not found: {to_client_id.hex()}")
             self.send_error_response(socket)
 
     def handle_get_messages(self, socket: socket.socket, header):
@@ -495,7 +494,7 @@ class Server:
         """
         client_id = header[0]
 
-        print(f"Getting messages for client {client_id}")
+        print(f"Getting messages for client {client_id.hex()}")
 
         # Get pending messages for this client
         pending = self.pending_messages.get(client_id, [])

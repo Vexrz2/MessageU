@@ -53,6 +53,7 @@ void Client::readClientInfo()
     // Line 1: Client name
     // Line 2: UUID in ASCII representation where every two characters represent an 8-bit hex value
     // Line 3: Private key generated on first program run in base64 format
+
     std::ifstream clientFile(PATH + "my.info");
     if (!clientFile.is_open())
     {
@@ -290,21 +291,112 @@ Client::RequestHeader Client::buildRequestHeader(uint16_t code, uint32_t payload
     // Payload size: 4 bytes (content size)
 
     RequestHeader header;
-
     header.clientId = _clientId;
     header.version = static_cast<uint8_t>(VERSION);
     header.code = code;
     header.payloadSize = payloadSize;
-
     return header;
+}
+
+bool Client::sendRequestAndReadResponse(const RequestHeader& header, const std::vector<char>& payload,
+                                        ResponseHeader& responseHeader, std::vector<char>& responsePayload)
+{
+    try
+    {
+        // Send request header
+        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
+
+        // Send payload if not empty
+        if (!payload.empty())
+        {
+            boost::asio::write(*_socket, boost::asio::buffer(payload));
+        }
+
+        // Read response header
+        size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
+        if (bytesRead != sizeof(responseHeader))
+        {
+            std::cerr << "Error reading response header from server" << std::endl;
+            return false;
+        }
+
+        // Check for server error
+        if (responseHeader.code == _responseCodes["ERROR"])
+        {
+            std::cerr << "Server error" << std::endl;
+            return false;
+        }
+
+        // Read response payload if present
+        if (responseHeader.payloadSize > 0)
+        {
+            responsePayload.resize(responseHeader.payloadSize);
+            boost::asio::read(*_socket, boost::asio::buffer(responsePayload.data(), responseHeader.payloadSize));
+        }
+
+        return true;
+    }
+    catch (std::exception& e)
+    {
+        _isConnected = false;
+        std::cerr << "Network error: " << e.what() << std::endl;
+        return false;
+    }
 }
 
 void Client::handleRegister()
 {
-	std::string username;
-	  
-	// Receive username from user input
-	std::cout << "Please enter desired username: ";
+    if (_isRegistered)
+    {
+        std::cerr << "You are already registered as " << _clientName << std::endl;
+        return;
+    }
+
+    ResponseHeader responseHeader;
+    std::vector<char> responsePayload;
+
+	std::string paddedUsername = getUsernameInput("Please enter desired username: ");
+
+    if (paddedUsername.empty())
+    {
+        return;
+    }
+
+	_clientName = paddedUsername;
+
+    // Create payload: username (255, null padded) + public key (160)	
+	std::string publicKey = _rsaPrivateWrapper->getPublicKey();
+	std::string payload = paddedUsername + publicKey;
+	std::vector<char> payloadBuffer(payload.begin(), payload.end());
+	Client::RequestHeader header = buildRequestHeader(_requestCodes["REGISTER"], payload.size());
+
+	if (!sendRequestAndReadResponse(header, payloadBuffer, responseHeader, responsePayload))
+    {
+        return;
+	}
+    
+	if (responseHeader.code == _responseCodes["REGISTER_SUCCESS"])
+	{
+		// Read response payload into client ID
+		std::copy(responsePayload.begin(), responsePayload.begin() + CLIENT_ID_LENGTH, _clientId.begin());
+
+		saveClientInfo();
+		_isRegistered = true;
+
+		std::cout << "Registration successful!" << std::endl;
+	}
+	else
+	{
+		std::cerr << "Unknown error. " << "Response code: " << responseHeader.code << std::endl;
+	}
+}
+
+std::string Client::getUsernameInput(const std::string& prompt)
+{
+    std::string username;
+
+    // Receive username from user input
+    std::cout << prompt;
     std::cin.ignore(); // Clear the input buffer
     std::getline(std::cin, username);
 
@@ -312,395 +404,307 @@ void Client::handleRegister()
     if (username.empty() || username.length() > (MAX_CLIENT_NAME_LENGTH - 1))
     {
         std::cerr << "Error: Username must be between 1 and " << (MAX_CLIENT_NAME_LENGTH - 1) << " characters long." << std::endl;
-        return;
+        return "";
     }
 
     // Create properly null-padded username string of exactly 255 bytes
     std::string paddedUsername(MAX_CLIENT_NAME_LENGTH, '\0');
     std::copy(username.begin(), username.end(), paddedUsername.begin());
 
-	_clientName = paddedUsername;
-
-	uint32_t payloadSize = MAX_CLIENT_NAME_LENGTH + RSAPublicWrapper::KEYSIZE; // Username + public key size
-	Client::RequestHeader header = buildRequestHeader(_requestCodes["REGISTER"], payloadSize);
-
-    // Create payload: username (255, null padded) + public key (160)
-	std::string publicKey = _rsaPrivateWrapper->getPublicKey();
-	std::string payload = paddedUsername + publicKey;
-
-	// Construct request buffer
-	std::vector<char> requestBuffer(sizeof(header) + payload.size());
-	std::memcpy(requestBuffer.data(), &header, sizeof(header));
-	std::memcpy(requestBuffer.data() + sizeof(header), payload.data(), payload.size());
-
-    try
-    {
-        // Send request header and payload
-        boost::asio::write(*_socket, boost::asio::buffer(requestBuffer));
-
-        // Read response
-		Client::ResponseHeader responseHeader;
-
-        size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
-        if (bytesRead != sizeof(responseHeader))
-        {
-            std::cerr << "Error reading response header from server" << std::endl;
-            return;
-        }
-        // Check response code
-        if (responseHeader.code == _responseCodes["ERROR"])
-        {
-            std::cerr << "Server error" << std::endl;
-            return;
-		}
-
-        if (responseHeader.code == _responseCodes["REGISTER_SUCCESS"])
-        {
-            // Read client ID from response
-			uint32_t payloadSize = responseHeader.payloadSize;
-            boost::asio::read(*_socket, boost::asio::buffer(_clientId.data(), payloadSize));
-
-            std::cout << "Registration successful!" << std::endl;
-			saveClientInfo();
-            _isRegistered = true;
-        }
-    }
-    catch (std::exception& e)
-    {
-        std::cerr << "Error during registration: " << e.what() << std::endl;
-        _isConnected = false;
-        _isRegistered = false;
-	}
+    return paddedUsername;
 }
 
 void Client::handleGetClients()
 {
     RequestHeader header = buildRequestHeader(_requestCodes["GET_CLIENTS"], 0);
+    ResponseHeader responseHeader;
+    std::vector<char> responsePayload;
 
-    try
+    if (!sendRequestAndReadResponse(header, {}, responseHeader, responsePayload))
     {
-		// Send request header (no payload)
-        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
-        
-        // Read response
-        Client::ResponseHeader responseHeader;
-
-        size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
-        if (bytesRead != sizeof(responseHeader))
-        {
-            std::cerr << "Error reading response header from server" << std::endl;
-            return;
-        }
-        // Check response code
-        if (responseHeader.code == _responseCodes["ERROR"])
-        {
-            std::cerr << "Server error" << std::endl;
-            return;
-        }
-
-        if (responseHeader.code == _responseCodes["CLIENT_LIST"])
-        {
-			// Read client list from response
-            uint32_t payloadSize = responseHeader.payloadSize;
-            std::vector<char> payloadBuffer(payloadSize);
-            boost::asio::read(*_socket, boost::asio::buffer(payloadBuffer.data(), payloadSize));
-
-            // Deserialize client list
-            _clients.clear();
-            size_t offset = 0;
-            while (offset < payloadSize)
-            {
-                // Extract client ID (16 bytes)
-				std::array<uint8_t, CLIENT_ID_LENGTH> clientId;
-				std::copy(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + CLIENT_ID_LENGTH, clientId.begin());
-				offset += CLIENT_ID_LENGTH;
-
-                // Extract client name (255 bytes)
-                std::string name(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + MAX_CLIENT_NAME_LENGTH);
-                offset += MAX_CLIENT_NAME_LENGTH;
-
-                ClientEntry entry(clientId, name, "", "");
-                _clients.push_back(entry);
-            }
-            std::cout << "Received client list:" << std::endl;
-            for (const auto& client : _clients)
-            {
-                // Convert client ID to hex string for display
-				std::string clientIdHex = bytesToHexString(client.getUUID());
-
-                std::cout << "Client ID: " << clientIdHex << ", Name: " << client.getName() << std::endl;
-            }
-        }
+        return;
     }
-    catch (std::exception& e)
+
+    if (responseHeader.code == _responseCodes["CLIENT_LIST"])
     {
-        _isConnected = false;
-        std::cerr << "Error getting clients: " << e.what() << std::endl;
+        processClientList(responsePayload);
+        displayClientList();
+    }
+    else
+    {
+        std::cerr << "Unexpected response code: " << responseHeader.code << std::endl;
+    }
+}
+
+void Client::processClientList(const std::vector<char>& payloadBuffer)
+{
+    _clients.clear();
+    size_t offset = 0;
+    uint32_t payloadSize = payloadBuffer.size();
+
+    while (offset < payloadSize)
+    {
+        // Extract client ID (16 bytes)
+        std::array<uint8_t, CLIENT_ID_LENGTH> clientId;
+        std::copy(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + CLIENT_ID_LENGTH, clientId.begin());
+        offset += CLIENT_ID_LENGTH;
+
+        // Extract client name (255 bytes)
+        std::string name(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + MAX_CLIENT_NAME_LENGTH);
+        offset += MAX_CLIENT_NAME_LENGTH;
+
+        ClientEntry entry(clientId, name, "", "");
+        _clients.push_back(entry);
+    }
+}
+
+void Client::displayClientList() const
+{
+    std::cout << "Received client list:" << std::endl;
+    for (const auto& client : _clients)
+    {
+        // Convert client ID to hex string for display
+        std::string clientIdHex = bytesToHexString(client.getUUID());
+
+        // Remove null padding from name for display
+        std::string displayName = client.getName();
+        size_t nullPos = displayName.find('\0');
+        if (nullPos != std::string::npos)
+        {
+            displayName = displayName.substr(0, nullPos);
+        }
+
+        std::cout << "Client ID: " << clientIdHex << ", Name: " << displayName << std::endl;
     }
 }
 
 void Client::handleGetPublicKey()
 {
-    std::string clientId;
-
-    // Receive clientID from user input
-    std::cout << "Please enter client ID: ";
+    // Receive username from user input
+    std::cout << "Please enter username: ";
     std::cin.ignore(); // Clear the input buffer
-    std::getline(std::cin, clientId);
 
-	// Validate client ID length (must be 16 bytes in hex format)
-    if (clientId.length() != CLIENT_ID_LENGTH * 2)
+    std::string username;
+    std::getline(std::cin, username);
+
+    if (username.empty())
     {
-        std::cerr << "Error: Invalid client ID format. Must be 16 bytes in hex format." << std::endl;
+        std::cerr << "Error: Input cannot be empty." << std::endl;
         return;
-	}
+    }
+
+    // Find the client by username
+    ClientEntry* targetClient = findClientByName(username);
+    if (!targetClient)
+    {
+        std::cerr << "Error: Client '" << username << "' not found in client list." << std::endl;
+        std::cerr << "Please request the client list first (option 120)." << std::endl;
+        return;
+    }
+
+    // Get client ID
+    std::array<uint8_t, CLIENT_ID_LENGTH> clientId = targetClient->getUUID();
+    std::vector<char> clientIdBytes(clientId.begin(), clientId.end());
 
     RequestHeader header = buildRequestHeader(_requestCodes["GET_PUBLIC_KEY"], CLIENT_ID_LENGTH);
-    
-    try
+    ResponseHeader responseHeader;
+    std::vector<char> responsePayload;
+
+    if (!sendRequestAndReadResponse(header, clientIdBytes, responseHeader, responsePayload))
     {
-        // Send request header
-        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
-
-		// Convert client ID from hex string to byte array
-		std::vector<char> clientIdBytes(CLIENT_ID_LENGTH);
-        for (size_t i = 0; i < CLIENT_ID_LENGTH; ++i)
-        {
-            std::string byteString = clientId.substr(i * 2, 2);
-            unsigned char byte = static_cast<unsigned char>(std::stoi(byteString, nullptr, 16));
-            clientIdBytes[i] = byte;
-		}
-
-		// Send client ID as payload
-		boost::asio::write(*_socket, boost::asio::buffer(clientIdBytes.data(), clientIdBytes.size()));
-        
-        // Read response
-        Client::ResponseHeader responseHeader;
-
-        size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
-        if (bytesRead != sizeof(responseHeader))
-        {
-            std::cerr << "Error reading response header from server" << std::endl;
-            return;
-        }
-        // Check response code
-        if (responseHeader.code == _responseCodes["ERROR"])
-        {
-            std::cerr << "Server error" << std::endl;
-            return;
-        }
-
-        if (responseHeader.code == _responseCodes["PUBLIC_KEY"])
-        {
-            // Read public key from response
-            uint32_t payloadSize = responseHeader.payloadSize;
-            std::vector<char> payloadBuffer(payloadSize);
-            boost::asio::read(*_socket, boost::asio::buffer(payloadBuffer.data(), payloadSize));
-
-			// Parse client ID (16) and public key (160)
-            if (payloadSize < CLIENT_ID_LENGTH + RSAPublicWrapper::KEYSIZE)
-            {
-                std::cerr << "Error: Invalid payload size for public key response" << std::endl;
-                return;
-			}
-
-            std::array<uint8_t, CLIENT_ID_LENGTH> receivedClientId;
-			std::copy(payloadBuffer.begin(), payloadBuffer.begin() + CLIENT_ID_LENGTH, receivedClientId.begin());
-			std::string publicKey(payloadBuffer.begin() + CLIENT_ID_LENGTH, payloadBuffer.begin() + CLIENT_ID_LENGTH + RSAPublicWrapper::KEYSIZE);
-
-			// Store public key in the corresponding client entry
-            for (auto& client : _clients)
-            {
-                if (client.getUUID() == receivedClientId) // Compare with client ID
-                {
-                    client.setPublicKey(publicKey);
-					std::cout << "Successfully retrieved public key from client ID " << clientId << std::endl;
-                    return;
-                }
-			}
-			std::cout << "Failed to find client with ID " << clientId << std::endl;
-        }
+        return;
     }
-    catch (std::exception& e)
+
+	// Read response
+    if (responseHeader.code == _responseCodes["PUBLIC_KEY"])
     {
-        _isConnected = false;
-        std::cerr << "Error getting public key: " << e.what() << std::endl;
+        // Extract client ID (16 bytes)
+        std::array<uint8_t, CLIENT_ID_LENGTH> receivedClientId;
+        std::copy(responsePayload.begin(), responsePayload.begin() + CLIENT_ID_LENGTH, receivedClientId.begin());
+
+        // Extract public key (160 bytes)
+        std::string publicKey(responsePayload.begin() + CLIENT_ID_LENGTH,
+            responsePayload.begin() + CLIENT_ID_LENGTH + RSAPublicWrapper::KEYSIZE);
+
+        // Find the client and store the public key
+        ClientEntry* client = findClientByUUID(receivedClientId);
+        client->setPublicKey(publicKey);
+
+        std::cout << "Successfully retrieved public key for user '" << username << "'" << std::endl;
+    }
+    else
+    {
+        std::cerr << "Unexpected response code: " << responseHeader.code << std::endl;
     }
 }
 
 void Client::handleGetMessages()
 {
     RequestHeader header = buildRequestHeader(_requestCodes["GET_MESSAGES"], 0);
-    
-    try
+    ResponseHeader responseHeader;
+    std::vector<char> responsePayload;
+
+    if (!sendRequestAndReadResponse(header, {}, responseHeader, responsePayload))
     {
-		// Send request header (no payload)
-        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
+        return;
+    }
 
-        // Read response
-        Client::ResponseHeader responseHeader;
-
-        size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
-        if (bytesRead != sizeof(responseHeader))
+    if (responseHeader.code == _responseCodes["MESSAGES_RECEIVED"])
+    {
+        if (responsePayload.empty())
         {
-            std::cerr << "Error reading response header from server" << std::endl;
-            return;
-        }
-        // Check response code
-        if (responseHeader.code == _responseCodes["ERROR"])
-        {
-            std::cerr << "Server error" << std::endl;
+            std::cout << "No pending messages." << std::endl;
             return;
         }
 
-        if (responseHeader.code == _responseCodes["MESSAGES_RECEIVED"])
+        processIncomingMessages(responsePayload);
+    }
+    else
+    {
+        std::cerr << "Unexpected response code: " << responseHeader.code << std::endl;
+    }
+}
+
+void Client::processIncomingMessages(const std::vector<char>& payloadBuffer)
+{
+    size_t offset = 0;
+    uint32_t payloadSize = payloadBuffer.size();
+
+    while (offset < payloadSize)
+    {
+		// Parse message header
+        IncomingMessageHeader messageHeader;
+        if (!parseMessageHeader(payloadBuffer, offset, messageHeader))
         {
-            // Read messages from response, one by one
+            std::cerr << "Error parsing message header" << std::endl;
+            break;
+        }
 
-            uint32_t payloadSize = responseHeader.payloadSize;
-            if (payloadSize == 0) 
+        // Extract message content
+        std::string content(payloadBuffer.begin() + offset,
+            payloadBuffer.begin() + offset + messageHeader.messageSize);
+        offset += messageHeader.messageSize;
+
+        std::string senderName = getSenderName(messageHeader.senderClientId);
+
+        processMessage(messageHeader, content, senderName);
+		std::cout << "-----<EOM>-----" << std::endl; // Generic EOM marker
+    }
+}
+
+bool Client::parseMessageHeader(const std::vector<char>& payloadBuffer, size_t& offset, IncomingMessageHeader& messageHeader)
+{
+    const size_t headerSize = CLIENT_ID_LENGTH + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint32_t);
+
+    if (offset + headerSize > payloadBuffer.size())
+    {
+        return false;
+    }
+
+    // Extract Client ID (16 bytes)
+    std::copy(payloadBuffer.begin() + offset,
+        payloadBuffer.begin() + offset + CLIENT_ID_LENGTH,
+        messageHeader.senderClientId.begin());
+    offset += CLIENT_ID_LENGTH;
+
+    // Extract Message ID (4 bytes)
+    std::memcpy(&messageHeader.messageId, payloadBuffer.data() + offset, sizeof(messageHeader.messageId));
+    offset += sizeof(messageHeader.messageId);
+
+    // Extract Message Type (1 byte)
+    std::memcpy(&messageHeader.messageType, payloadBuffer.data() + offset, sizeof(messageHeader.messageType));
+    offset += sizeof(messageHeader.messageType);
+
+    // Extract Message Size (4 bytes)
+    std::memcpy(&messageHeader.messageSize, payloadBuffer.data() + offset, sizeof(messageHeader.messageSize));
+    offset += sizeof(messageHeader.messageSize);
+
+    return true;
+}
+
+std::string Client::getSenderName(const std::array<uint8_t, CLIENT_ID_LENGTH>& senderClientId) const
+{
+    for (const auto& client : _clients)
+    {
+        if (client.getUUID() == senderClientId)
+        {
+            std::string name = client.getName();
+            size_t nullPos = name.find('\0');
+            if (nullPos != std::string::npos)
             {
-				std::cout << "No pending messages." << std::endl;
-                return;
+                name = name.substr(0, nullPos);
             }
-
-            std::vector<char> payloadBuffer(payloadSize);
-            boost::asio::read(*_socket, boost::asio::buffer(payloadBuffer.data(), payloadSize));
-
-            // Deserialize messages
-            size_t offset = 0;
-            while (offset < payloadSize)
-            {
-                // Extract Client ID (16 bytes)
-                std::array<uint8_t, CLIENT_ID_LENGTH> senderClientId;
-                std::copy(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + CLIENT_ID_LENGTH, senderClientId.begin());
-                offset += CLIENT_ID_LENGTH;
-
-                // Extract Message ID (4 bytes)
-                uint32_t messageId;
-                std::memcpy(&messageId, payloadBuffer.data() + offset, sizeof(messageId));
-                offset += sizeof(messageId);
-
-                // Extract Message Type (1 byte)
-                uint8_t messageType;
-                std::memcpy(&messageType, payloadBuffer.data() + offset, sizeof(messageType));
-                offset += sizeof(messageType);
-
-                // Extract Message Size (4 bytes)
-                uint32_t messageSize;
-                std::memcpy(&messageSize, payloadBuffer.data() + offset, sizeof(messageSize));
-                offset += sizeof(messageSize);
-
-                // Extract Message Content (messageSize bytes)
-                std::string content(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + messageSize);
-                offset += messageSize;
-
-                // Find sender name by Client ID
-                std::string senderName = "Unknown";
-                for (const auto& client : _clients)
-                {
-                    if (client.getUUID() == senderClientId)
-                    {
-                        senderName = client.getName();
-                        break;
-                    }
-                }
-
-                switch (messageType)
-                {
-                case 1: // Request for symmetric key
-                    std::cout << "From: " << senderName << std::endl;
-                    std::cout << "Content: Request for symmetric key" << std::endl;
-                    break;
-
-                case 2: // Send symmetric key
-                {
-                    std::cout << "From: " << senderName << std::endl;
-                    std::cout << "Content: " << std::endl;
-
-					// Decrypt symmetric key using RSA private key
-					try
-					{
-						std::cout << "Raw content: " << content << std::endl;
-						std::string decryptedKey = _rsaPrivateWrapper->decrypt(content);
-						std::cout << "Private key: " << _rsaPrivateWrapper->getPrivateKey() << std::endl;
-						//std::cout << "Base64 private key: " << Base64Wrapper::encode(_rsaPrivateWrapper->getPrivateKey()) << std::endl;
-
-						// Find the client and store the symmetric key
-						for (auto& client : _clients)
-						{
-							std::cout << "Decrypted symmetric key: " << decryptedKey << std::endl;
-							std::cout << "Client UUID: " << bytesToHexString(client.getUUID()) << std::endl;
-							std::cout << "Sender UUID: " << bytesToHexString(senderClientId) << std::endl;
-							if (client.getUUID() == senderClientId)
-							{
-								std::cout << "Setting symmetric key for client: " << client.getName() << std::endl;
-								client.setSymmetricKey(decryptedKey);
-								break;
-							}
-						}
-
-						std::cout << "Received symmetric key from " << senderName << std::endl;
-					}
-					catch (const std::exception& e)
-					{
-						std::cerr << "Error decrypting symmetric key: " << e.what() << std::endl;
-					}
-                }
-                break;
-
-                case 3: // Text message
-                {
-                    std::cout << "From: " << senderName << std::endl;
-                    std::cout << "Content: " << std::endl;
-
-                    // Find the symmetric key for this sender
-                    std::string symmetricKey;
-                    for (const auto& client : _clients)
-                    {
-                        if (client.getUUID() == senderClientId)
-                        {
-                            symmetricKey = client.getSymmetricKey();
-                            break;
-                        }
-                    }
-
-                    if (!symmetricKey.empty())
-                    {
-                        try
-                        {
-                            // Decrypt message using AES symmetric key
-                            AESWrapper aesWrapper(reinterpret_cast<const unsigned char*>(symmetricKey.c_str()), symmetricKey.length());
-                            std::string decryptedMessage = aesWrapper.decrypt(content.c_str(), content.length());
-                            std::cout << decryptedMessage << std::endl;
-                        }
-                        catch (const std::exception& e)
-                        {
-                            std::cerr << "Error decrypting message: " << e.what() << std::endl;
-                        }
-                    }
-                    else
-                    {
-						// Symmetric key not found
-                        std::cout << "Can't decrypt message" << std::endl;
-                    }
-                }
-                break;
-
-                default:
-                    std::cout << "From: " << senderName << std::endl;
-                    std::cout << "Content: Unknown message type (" << static_cast<int>(messageType) << ")" << std::endl;
-                    break;
-                }
-
-                std::cout << "-----<EOM>-----" << std::endl;
-            }
+            return name;
         }
     }
-    catch (std::exception& e)
+    return "Unknown";
+}
+
+void Client::processMessage(const IncomingMessageHeader& messageHeader, const std::string& content, const std::string& senderName)
+{
+    std::cout << "From: " << senderName << std::endl;
+    std::cout << "Content: ";
+
+    switch (messageHeader.messageType)
     {
-        _isConnected = false;
-        std::cerr << "Error getting messages: " << e.what() << std::endl;
+    case 1: // Request for symmetric key
+        std::cout << "Request for symmetric key" << std::endl;
+        break;
+
+    case 2: // Send symmetric key
+        std::cout << std::endl;
+        processSymmetricKeyMessage(content, messageHeader.senderClientId, senderName);
+        break;
+
+    case 3: // Text message
+        std::cout << std::endl;
+        processTextMessage(content, messageHeader.senderClientId);
+        break;
+
+    default:
+        std::cout << "Unknown message type (" << static_cast<int>(messageHeader.messageType) << ")" << std::endl;
+        break;
+    }
+}
+
+void Client::processSymmetricKeyMessage(const std::string& content, const std::array<uint8_t, CLIENT_ID_LENGTH>& senderClientId, const std::string& senderName)
+{
+    try
+    {
+        std::string decryptedKey = _rsaPrivateWrapper->decrypt(content);
+
+        // Find the client and store the symmetric key
+		ClientEntry* client = findClientByUUID(senderClientId);
+		client->setSymmetricKey(decryptedKey);
+		std::cout << "Received symmetric key from " << senderName << std::endl;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Error decrypting symmetric key: " << e.what() << std::endl;
+    }
+}
+
+void Client::processTextMessage(const std::string& content, const std::array<uint8_t, CLIENT_ID_LENGTH>& senderClientId)
+{
+    // Find the symmetric key for this sender
+    ClientEntry* client = findClientByUUID(senderClientId);
+    if (!client || client->getSymmetricKey().empty())
+    {
+        std::cout << "Can't decrypt message" << std::endl;
+        return;
+    }
+
+    try
+    {
+        const std::string& symmetricKey = client->getSymmetricKey();
+        AESWrapper aesWrapper(reinterpret_cast<const unsigned char*>(symmetricKey.c_str()),
+            symmetricKey.length());
+        std::string decryptedMessage = aesWrapper.decrypt(content.c_str(), content.length());
+        std::cout << decryptedMessage << std::endl;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Error decrypting message: " << e.what() << std::endl;
     }
 }
 
@@ -918,4 +922,36 @@ std::string Client::bytesToHexString(const std::array<uint8_t, 16>& bytes) const
         oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
     }
     return oss.str();
+}
+
+ClientEntry* Client::findClientByName(const std::string& username)
+{
+    for (auto& client : _clients)
+    {
+        // Remove null padding from client name before comparison
+        std::string clientName = client.getName();
+        size_t nullPos = clientName.find('\0');
+        if (nullPos != std::string::npos)
+        {
+            clientName = clientName.substr(0, nullPos);
+        }
+
+        if (clientName == username)
+        {
+            return &client;
+        }
+    }
+    return nullptr;
+}
+
+ClientEntry* Client::findClientByUUID(const std::array<uint8_t, CLIENT_ID_LENGTH>& uuid)
+{
+    for (auto& client : _clients)
+    {
+        if (client.getUUID() == uuid)
+        {
+            return &client;
+        }
+    }
+    return nullptr;
 }
