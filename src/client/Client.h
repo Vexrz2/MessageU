@@ -14,6 +14,8 @@ public:
 	static const int MAX_CLIENT_NAME_LENGTH = 255;
 	static const int CLIENT_ID_LENGTH = 16; // UUID length in bytes
 	static const int DEFAULT_SERVER_PORT = 1357;
+	
+	std::string PATH = ""; // Path to store client files
 
 #pragma pack(push, 1) // Ensure no padding is added to the structs
     struct RequestHeader {

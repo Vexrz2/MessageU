@@ -13,14 +13,13 @@ using boost::asio::ip::tcp;
 
 Client::Client()
 	: _ioContext(std::make_unique<boost::asio::io_context>()), 
-    _socket(std::make_unique<tcp::socket>(*_ioContext)), _rsaPrivateWrapper(nullptr)
+	_socket(std::make_unique<tcp::socket>(*_ioContext)), _rsaPrivateWrapper(nullptr)
 {
 	// Read Client info from my.info
     readClientInfo();
 
 	// Read server address and port from server.info
 	readServerInfo();
-
 }
 
 void Client::run()
@@ -54,7 +53,7 @@ void Client::readClientInfo()
     // Line 1: Client name
     // Line 2: UUID in ASCII representation where every two characters represent an 8-bit hex value
     // Line 3: Private key generated on first program run in base64 format
-    std::ifstream clientFile(std::string("x64\\Release\\") + "my.info");
+    std::ifstream clientFile(PATH + "my.info");
     if (!clientFile.is_open())
     {
 		// User is not registered yet, create a new temp client ID and name, generate a new RSA key pair.
@@ -112,7 +111,7 @@ void Client::readClientInfo()
 void Client::saveClientInfo()
 {
     // Save client ID and name to my.info
-    std::ofstream clientFile(std::string("x64\\Release\\") + "my.info");
+    std::ofstream clientFile(PATH + "my.info");
     if (!clientFile.is_open())
     {
         std::cerr << "Error: Could not open my.info file for writing" << std::endl;
@@ -138,7 +137,7 @@ void Client::saveClientInfo()
 void Client::readServerInfo()
 {
 	// Read server address and port from server.info
-	std::ifstream serverFile(std::string("x64\\Release\\") + "server.info");
+    std::ifstream serverFile(PATH + "server.info");
 	if (!serverFile.is_open())
 	{
 		// Default fallback
@@ -230,6 +229,18 @@ void Client::promptForInput()
 
 void Client::handleClientInput(int choice)
 {
+    if (!ensureConnection())
+    {
+        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
+        return;
+    }
+
+    if (!_isRegistered && choice != 110)
+    {
+        std::cerr << "You must register first." << std::endl;
+        return;
+    }
+
 	switch (choice)
 	{
 	case 110:
@@ -290,18 +301,6 @@ Client::RequestHeader Client::buildRequestHeader(uint16_t code, uint32_t payload
 
 void Client::handleRegister()
 {
-    if (!ensureConnection())
-    {
-        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
-        return;
-    }
-
-    if (_isRegistered)
-    {
-        std::cerr << "You are already registered as " << _clientName  << std::endl;
-        return;
-	}
-
 	std::string username;
 	  
 	// Receive username from user input
@@ -376,18 +375,6 @@ void Client::handleRegister()
 
 void Client::handleGetClients()
 {
-    if (!ensureConnection())
-    {
-        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
-        return;
-    }
-
-    if (!_isRegistered)
-    {
-        std::cerr << "You must register first before requesting client list." << std::endl;
-        return;
-	}
-
     RequestHeader header = buildRequestHeader(_requestCodes["GET_CLIENTS"], 0);
 
     try
@@ -454,18 +441,6 @@ void Client::handleGetClients()
 
 void Client::handleGetPublicKey()
 {
-    if (!ensureConnection())
-    {
-        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
-        return;
-    }
-
-    if (!_isRegistered)
-    {
-        std::cerr << "You must register first before requesting public key." << std::endl;
-        return;
-    }
-
     std::string clientId;
 
     // Receive clientID from user input
@@ -555,18 +530,6 @@ void Client::handleGetPublicKey()
 
 void Client::handleGetMessages()
 {
-    if (!ensureConnection())
-    {
-        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
-        return;
-    }
-
-    if (!_isRegistered)
-    {
-        std::cerr << "You must register first before requesting messages." << std::endl;
-        return;
-	}
-
     RequestHeader header = buildRequestHeader(_requestCodes["GET_MESSAGES"], 0);
     
     try
@@ -655,34 +618,34 @@ void Client::handleGetMessages()
                     std::cout << "From: " << senderName << std::endl;
                     std::cout << "Content: " << std::endl;
 
-                    // Decrypt symmetric key using RSA private key
-                    if (_rsaPrivateWrapper)
-                    {
-                        try
-                        {
-                            std::string decryptedKey = _rsaPrivateWrapper->decrypt(content);
+					// Decrypt symmetric key using RSA private key
+					try
+					{
+						std::cout << "Raw content: " << content << std::endl;
+						std::string decryptedKey = _rsaPrivateWrapper->decrypt(content);
+						std::cout << "Private key: " << _rsaPrivateWrapper->getPrivateKey() << std::endl;
+						//std::cout << "Base64 private key: " << Base64Wrapper::encode(_rsaPrivateWrapper->getPrivateKey()) << std::endl;
 
-                            // Find the client and store the symmetric key
-                            for (auto& client : _clients)
-                            {
-                                if (client.getUUID() == senderClientId)
-                                {
-                                    client.setSymmetricKey(decryptedKey);
-                                    break;
-                                }
-                            }
+						// Find the client and store the symmetric key
+						for (auto& client : _clients)
+						{
+							std::cout << "Decrypted symmetric key: " << decryptedKey << std::endl;
+							std::cout << "Client UUID: " << bytesToHexString(client.getUUID()) << std::endl;
+							std::cout << "Sender UUID: " << bytesToHexString(senderClientId) << std::endl;
+							if (client.getUUID() == senderClientId)
+							{
+								std::cout << "Setting symmetric key for client: " << client.getName() << std::endl;
+								client.setSymmetricKey(decryptedKey);
+								break;
+							}
+						}
 
-                            std::cout << "Received symmetric key from " << senderName << std::endl;
-                        }
-                        catch (const std::exception& e)
-                        {
-                            std::cerr << "Error decrypting symmetric key: " << e.what() << std::endl;
-                        }
-                    }
-                    else
-                    {
-                        std::cerr << "Error: RSA private key not available" << std::endl;
-                    }
+						std::cout << "Received symmetric key from " << senderName << std::endl;
+					}
+					catch (const std::exception& e)
+					{
+						std::cerr << "Error decrypting symmetric key: " << e.what() << std::endl;
+					}
                 }
                 break;
 
@@ -743,18 +706,6 @@ void Client::handleGetMessages()
 
 void Client::handleSendMessage(int type)
 {
-    if (!ensureConnection())
-    {
-        std::cerr << "Cannot perform operation: not connected to server" << std::endl;
-        return;
-    }
-
-    if (!_isRegistered)
-    {
-        std::cerr << "You must register first before sending messages." << std::endl;
-		return;
-	}
-
     // Get recipient from user input
     std::string recipient;
     std::cout << "Enter recipient username: ";
@@ -767,7 +718,7 @@ void Client::handleSendMessage(int type)
         return;
     }
     
-	// Find recipient client ID, public key, and symmetric key
+	// Get existing recipient client ID, public key, and symmetric key
 	std::array<uint8_t, CLIENT_ID_LENGTH> recipientId = { 0 };
     std::string message, encryptedMessage;
 	std::string publicKey, symmetricKey;
@@ -795,7 +746,7 @@ void Client::handleSendMessage(int type)
         return;
 	}
 
-    if (publicKey.empty())
+	if (publicKey.empty() && type != static_cast<int>(MessageType::REGULAR)) // Only check for non-REGULAR messages
     {
         std::cerr << "Error: Public key for recipient not found." << std::endl;
         return;
@@ -840,7 +791,21 @@ void Client::handleSendMessage(int type)
 	}
 	case static_cast<int>(MessageType::SEND_SYM_KEY):
 	{
-		message = symmetricKey; // Use symmetric key as message content
+		// Generate a random symmetric key
+        AESWrapper aesWrapper;
+        const unsigned char* symmetricKey = aesWrapper.getKey();
+		std::string symmetricKeyStr(reinterpret_cast<const char*>(symmetricKey), AESWrapper::DEFAULT_KEYLENGTH);
+		message = symmetricKeyStr;
+
+		// Append symmetric key to client
+		for (auto& client : _clients)
+            {
+            if (client.getUUID() == recipientId)
+            {
+                client.setSymmetricKey(symmetricKeyStr);
+                break;
+            }
+		}
 
 		// Encrypt message using recipient's public key
 		RSAPublicWrapper rsaPublicWrapper(publicKey);
@@ -882,13 +847,6 @@ void Client::handleSendMessage(int type)
     {
         // Send request header
         boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
-
-		// DEbug print bytes of request header
-		std::cout << "Request header sent: "
-            << "Client ID: " << bytesToHexString(header.clientId) << ", "
-                  << "Version: " << static_cast<int>(header.version) << ", "
-                  << "Code: " << header.code << ", "
-			<< "Payload Size: " << header.payloadSize << std::endl;
         
         // Send payload
         boost::asio::write(*_socket, boost::asio::buffer(payloadBuffer));
