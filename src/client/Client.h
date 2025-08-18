@@ -88,6 +88,7 @@ private:
 public:
 	// Constructor and destructor
 	Client();
+	~Client() = default;
 
 	// Lifecycle methods
     void run();
