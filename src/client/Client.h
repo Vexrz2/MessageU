@@ -126,6 +126,9 @@ public:
 
 	// Send message helper functions
 	bool validateKeysForMessageType(int messageType, const ClientEntry& recipient);
+	std::string prepareMessageContent(int messageType, ClientEntry& recipient);
+	std::string prepareRegularMessage(const ClientEntry& recipient);
+	std::string prepareSymmetricKeyMessage(ClientEntry& recipient);
 
 	// Helper functions
     Client::RequestHeader buildRequestHeader(uint16_t code, uint32_t payloadSize);

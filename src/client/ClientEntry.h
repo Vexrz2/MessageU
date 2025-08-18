@@ -12,14 +12,13 @@ private:
 
 public:
 	ClientEntry() = default; // Default constructor
-    ClientEntry(const std::array<uint8_t, 16>& id, const std::string& name, const std::string& pubKey, const std::string& symKey)
-        : _uuid(id), _username(name), _publicKey(pubKey), _symmetricKey(symKey) {}
-    const std::array<uint8_t, 16>& getUUID() const { return _uuid; }
-    const std::string& getName() const { return _username; }
-    const std::string& getPublicKey() const { return _publicKey; }
-    const std::string& getSymmetricKey() const { return _symmetricKey; }
-    void setName(const std::string& newName) { _username = newName; }
-    void setPublicKey(const std::string& newPubKey) { _publicKey = newPubKey; }
-	void setSymmetricKey(const std::string& newSymKey) { _symmetricKey = newSymKey; }
+    ClientEntry(const std::array<uint8_t, 16>& id, const std::string& name, const std::string& pubKey, const std::string& symKey);
+    const std::array<uint8_t, 16>& getUUID() const;
+    const std::string& getName() const;
+    const std::string& getPublicKey() const;
+    const std::string& getSymmetricKey() const;
+    void setName(const std::string& newName);
+    void setPublicKey(const std::string& newPubKey);
+    void setSymmetricKey(const std::string& newSymKey);
 };
 

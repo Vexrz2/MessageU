@@ -540,6 +540,7 @@ void Client::handleGetPublicKey()
 
 void Client::handleGetMessages()
 {
+	// Build request header for getting messages (empty payload)
     RequestHeader header = buildRequestHeader(_requestCodes["GET_MESSAGES"], 0);
     ResponseHeader responseHeader;
     std::vector<char> responsePayload;
@@ -647,16 +648,16 @@ void Client::processMessage(const IncomingMessageHeader& messageHeader, const st
 
     switch (messageHeader.messageType)
     {
-    case 1: // Request for symmetric key
+    case static_cast<int>(Client::MessageType::REQ_SYM_KEY):
         std::cout << "Request for symmetric key" << std::endl;
         break;
 
-    case 2: // Send symmetric key
+	case static_cast<int>(Client::MessageType::SEND_SYM_KEY):
         std::cout << std::endl;
         processSymmetricKeyMessage(content, messageHeader.senderClientId, senderName);
         break;
 
-    case 3: // Text message
+	case static_cast<int>(Client::MessageType::REGULAR):
         std::cout << std::endl;
         processTextMessage(content, messageHeader.senderClientId);
         break;
@@ -723,179 +724,177 @@ void Client::handleSendMessage(int type)
     }
     
 	// Get existing recipient client ID, public key, and symmetric key
-	std::array<uint8_t, CLIENT_ID_LENGTH> recipientId = { 0 };
-    std::string message, encryptedMessage;
-	std::string publicKey, symmetricKey;
-    for (const auto& client : _clients)
+    ClientEntry* recipientClient = findClientByName(recipient);
+    if (!recipientClient)
     {
-        // Remove null padding from client name before comparison
-        std::string clientName = client.getName();
-        size_t nullPos = clientName.find('\0');
-        if (nullPos != std::string::npos) {
-            clientName = clientName.substr(0, nullPos);
-        }
-
-        if (clientName == recipient)
-        {
-            recipientId = client.getUUID();
-			publicKey = client.getPublicKey();
-            symmetricKey = client.getSymmetricKey();
-            break;
-        }
-	}
-
-    if (recipientId == std::array<uint8_t, CLIENT_ID_LENGTH>{0})
-    {
-        std::cerr << "Error: Recipient not found." << std::endl;
-        return;
-	}
-
-	if (publicKey.empty() && type != static_cast<int>(MessageType::REGULAR)) // Only check for non-REGULAR messages
-    {
-        std::cerr << "Error: Public key for recipient not found." << std::endl;
+        std::cerr << "Error: Recipient '" << recipient << "' not found." << std::endl;
+        std::cerr << "Please request the client list first (option 120)." << std::endl;
         return;
     }
 
-    if (symmetricKey.empty() && type == static_cast<int>(MessageType::REGULAR)) // Only check for REGULAR messages
+    // Validate required keys for message type
+    if (!validateKeysForMessageType(type, *recipientClient))
     {
-        std::cerr << "Error: Symmetric key for recipient not found." << std::endl;
-		return;
-	}
+        return;
+    }
 
-	// Prepare message content based on type
-	switch (type)
-	{
-	case static_cast<int>(MessageType::REGULAR):
-	{
-		// Get message content from user input
-		std::cout << "Enter message content: ";
-		std::cin.ignore(); // Clear the input buffer
-		std::getline(std::cin, message);
-		if (message.empty())
-		{
-			std::cerr << "Error: Message content cannot be empty." << std::endl;
-			return;
-		}
+	// Prepare and encrypt message content based on type
+    std::string encryptedMessage = prepareMessageContent(type, *recipientClient);
+    std::cout << type << std::endl;
+    if (encryptedMessage.empty() && type != static_cast<int>(MessageType::REQ_SYM_KEY))
+    {
+        return; // Error already printed in prepareMessageContent
+    }
 
-		// Encrypt message using AES symmetric key
-		AESWrapper aesWrapper(reinterpret_cast<const unsigned char*>(symmetricKey.c_str()), symmetricKey.length());
-		encryptedMessage = aesWrapper.encrypt(message.c_str(), message.length());
-		if (encryptedMessage.empty())
-		{
-			std::cerr << "Error: Failed to encrypt message." << std::endl;
-			return;
-		}
-		break;
-	}
-	case static_cast<int>(MessageType::REQ_SYM_KEY):
-	{
-		// Empty message for symmetric key request
-        encryptedMessage = "";
-		break;
-	}
-	case static_cast<int>(MessageType::SEND_SYM_KEY):
-	{
-		// Generate a random symmetric key
-        AESWrapper aesWrapper;
-        const unsigned char* symmetricKey = aesWrapper.getKey();
-		std::string symmetricKeyStr(reinterpret_cast<const char*>(symmetricKey), AESWrapper::DEFAULT_KEYLENGTH);
-		message = symmetricKeyStr;
-
-		// Append symmetric key to client
-		for (auto& client : _clients)
-            {
-            if (client.getUUID() == recipientId)
-            {
-                client.setSymmetricKey(symmetricKeyStr);
-                break;
-            }
-		}
-
-		// Encrypt message using recipient's public key
-		RSAPublicWrapper rsaPublicWrapper(publicKey);
-		encryptedMessage = rsaPublicWrapper.encrypt(message);
-		if (encryptedMessage.empty())
-		{
-			std::cerr << "Error: Failed to encrypt request for symmetric key." << std::endl;
-			return;
-		}
-	}
-	}
-
-	// Build payload
+	// Build payload: Client ID (16 bytes)  + Message Type (1 byte) + Message Size (4 bytes) + Encrypted Message
 	uint32_t payloadSize = CLIENT_ID_LENGTH + sizeof(uint8_t) + sizeof(uint32_t) + encryptedMessage.size();
-	// Payload structure:
-	// Client ID (16 bytes)  + Message Type (1 byte) + Message Size (4 bytes) + Encrypted Message
 	std::vector<char> payloadBuffer(payloadSize);
 	size_t offset = 0;
+
 	// Copy recipient Client ID
+	std::array<uint8_t, CLIENT_ID_LENGTH> recipientId = recipientClient->getUUID();
 	std::copy(recipientId.begin(), recipientId.end(), payloadBuffer.data() + offset);
 	offset += CLIENT_ID_LENGTH;
+
 	// Copy message type
 	uint8_t messageType = static_cast<uint8_t>(type);
 	std::memcpy(payloadBuffer.data() + offset, &messageType, sizeof(messageType));
 	offset += sizeof(messageType);
+
 	// Copy message size
 	uint32_t messageSize = static_cast<uint32_t>(encryptedMessage.size());
 	std::memcpy(payloadBuffer.data() + offset, &messageSize, sizeof(messageSize));
 	offset += sizeof(messageSize);
+
 	// Copy encrypted message
 	std::memcpy(payloadBuffer.data() + offset, encryptedMessage.data(), encryptedMessage.size());
 
-
-
     // Build request header
     RequestHeader header = buildRequestHeader(_requestCodes["SEND_MESSAGE"], payloadSize);
-    
+
+	// Prepare response header and payload
+    ResponseHeader responseHeader;
+    std::vector<char> responsePayload;
+
+    if (!sendRequestAndReadResponse(header, payloadBuffer, responseHeader, responsePayload))
+    {
+        return;
+    }
+
+    if (responseHeader.code == _responseCodes["MESSAGE_SENT"])
+    {
+		// We can do something with the response payload if needed, but it's not used. (Client ID + Message ID)
+
+        std::cout << "Message sent successfully." << std::endl;
+    }
+    else
+    {
+        std::cerr << "Unexpected response code: " << responseHeader.code << std::endl;
+    }
+}
+
+bool Client::validateKeysForMessageType(int messageType, const ClientEntry& recipient)
+{
+    switch (messageType)
+    {
+    case static_cast<int>(MessageType::REGULAR):
+        if (recipient.getSymmetricKey().empty())
+        {
+            std::cerr << "Error: Symmetric key for recipient not found." << std::endl;
+            std::cerr << "Please exchange symmetric keys first (option 151/152)." << std::endl;
+            return false;
+        }
+        break;
+
+    case static_cast<int>(MessageType::REQ_SYM_KEY):
+        // No keys needed for requesting symmetric key
+		break;
+
+    case static_cast<int>(MessageType::SEND_SYM_KEY):
+        if (recipient.getPublicKey().empty())
+        {
+            std::cerr << "Error: Public key for recipient not found." << std::endl;
+            std::cerr << "Please request the public key first (option 130)." << std::endl;
+            return false;
+        }
+        break;
+    default:
+        std::cerr << "Error: Unknown message type." << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+std::string Client::prepareMessageContent(int messageType, ClientEntry& recipient)
+{
+    switch (messageType)
+    {
+    case static_cast<int>(MessageType::REGULAR):
+        return prepareRegularMessage(recipient);
+
+    case static_cast<int>(MessageType::REQ_SYM_KEY):
+        return ""; // Empty message for symmetric key request
+
+    case static_cast<int>(MessageType::SEND_SYM_KEY):
+        return prepareSymmetricKeyMessage(recipient);
+
+    default:
+        std::cerr << "Error: Unknown message type." << std::endl;
+        return "";
+    }
+}
+
+std::string Client::prepareRegularMessage(const ClientEntry& recipient)
+{
+    std::cout << "Enter message content: ";
+
+    std::string message;
+	std::cin.ignore(); // Clear the input buffer
+    std::getline(std::cin, message);
+
+    if (message.empty())
+    {
+        std::cerr << "Error: Message content cannot be empty." << std::endl;
+        return "";
+    }
+
+    // Encrypt message using AES symmetric key
     try
     {
-        // Send request header
-        boost::asio::write(*_socket, boost::asio::buffer(&header, sizeof(header)));
-        
-        // Send payload
-        boost::asio::write(*_socket, boost::asio::buffer(payloadBuffer));
-
-		// Read response
-		Client::ResponseHeader responseHeader;
-		size_t bytesRead = boost::asio::read(*_socket, boost::asio::buffer(&responseHeader, sizeof(responseHeader)));
-
-        if (bytesRead != sizeof(responseHeader))
-        {
-            std::cerr << "Error reading response header from server" << std::endl;
-            return;
-		}
-
-		// Check response code
-        if (responseHeader.code == _responseCodes["ERROR"])
-        {
-            std::cerr << "Server error" << std::endl;
-            return;
-        }
-
-        if (responseHeader.code == _responseCodes["MESSAGE_SENT"])
-        {
-            uint32_t payloadSize = responseHeader.payloadSize;
-            std::vector<char> payloadBuffer(payloadSize);
-            boost::asio::read(*_socket, boost::asio::buffer(payloadBuffer.data(), payloadSize));
-
-			// Deserialize response payload
-            size_t offset = 0;
-            // Extract Client ID (16 bytes)
-            std::array<uint8_t, CLIENT_ID_LENGTH> senderClientId;
-            std::copy(payloadBuffer.begin() + offset, payloadBuffer.begin() + offset + CLIENT_ID_LENGTH, senderClientId.begin());
-            offset += CLIENT_ID_LENGTH;
-            // Extract Message ID (4 bytes)
-            uint32_t messageId;
-            std::memcpy(&messageId, payloadBuffer.data() + offset, sizeof(messageId));
-			offset += sizeof(messageId);
-
-            std::cout << "Message sent successfully. ID: " << messageId << std::endl;
-        }
+        const std::string& symmetricKey = recipient.getSymmetricKey();
+        AESWrapper aesWrapper(reinterpret_cast<const unsigned char*>(symmetricKey.c_str()),
+            symmetricKey.length());
+        return aesWrapper.encrypt(message.c_str(), message.length());
     }
-    catch (std::exception& e)
+    catch (const std::exception& e)
     {
-        _isConnected = false;
-        std::cerr << "Error sending message: " << e.what() << std::endl;
+        std::cerr << "Error: Failed to encrypt message: " << e.what() << std::endl;
+        return "";
+    }
+}
+
+std::string Client::prepareSymmetricKeyMessage(ClientEntry& recipient)
+{
+    // Generate a random symmetric key
+    AESWrapper aesWrapper;
+    const unsigned char* symmetricKey = aesWrapper.getKey();
+    std::string symmetricKeyStr(reinterpret_cast<const char*>(symmetricKey),
+        AESWrapper::DEFAULT_KEYLENGTH);
+
+    // Store the symmetric key for this recipient
+    recipient.setSymmetricKey(symmetricKeyStr);
+
+    // Encrypt symmetric key using recipient's public key
+    try
+    {
+        RSAPublicWrapper rsaPublicWrapper(recipient.getPublicKey());
+        return rsaPublicWrapper.encrypt(symmetricKeyStr);
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Error: Failed to encrypt symmetric key: " << e.what() << std::endl;
+        return "";
     }
 }
 
